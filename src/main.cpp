@@ -107,8 +107,8 @@ void loop()
   u8g2.print("lx");
 
   // 显示分贝值（第三行）
-  u8g2.print("  dB: ");
-  u8g2.print(dB);
+ // u8g2.print("  dB: ");
+ // u8g2.print(dB);
 
   // 显示温湿度值（第四行，格式为 T: <value>C   &H:<value>%）
   u8g2.setCursor(0, 60);
