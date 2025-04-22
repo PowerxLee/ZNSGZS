@@ -14,19 +14,24 @@
 #define DHTPIN 1            // DHT11温湿度传感器引脚
 #define VOICE 3            // max4466语音传感器引脚
 #define DHTTYPE DHT11       // 使用DHT11型号
+#define ZW_IRQ 18           //指纹模块检测引脚
+#define ZW_CTRL 11           // 指纹模块启动引脚
 
 // 输出设备引脚
 #define LIGHT_PIN 16        // LED灯引脚
+#define FAN_PIN 14          // 风扇控制引脚
+#define PUMP_PIN 17         // 水泵控制引脚
 
 // 输入设备引脚
-#define KEY1 39             // 按键引脚
-#define KEY3 21             // 按键3引脚
+#define KEY1 47             // 按键引脚
+#define KEY2 38             // 按键引脚
+#define KEY3 39             // 按键3引脚
 
 //----------------------------------------
 // 全局对象初始化
 //----------------------------------------
-// 初始化OLED显示屏，使用硬件I2C接口
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE, /* clock=*/38, /* data=*/47);
+// 初始化OLED显示屏 SCL-21   SDA-40
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE, /* clock=*/21, /* data=*/40);
 
 // 初始化DHT11温湿度传感器
 DHT dht(DHTPIN, DHTTYPE);
@@ -48,11 +53,21 @@ int fingerOption = 0;        // 指纹选项，0为添加指纹，1为删除指�
 
 // 添加时间管理变量
 unsigned long lastSensorReadTime = 0;  // 上次传感器读取时间
-const unsigned long sensorReadInterval = 100;  // 传感器读取间隔，1000ms（1秒）
+const unsigned long sensorReadInterval = 100;  // 传感器读取间隔，100ms
 
 // 创建OneButton对象
 OneButton button1(KEY1, true); // KEY1按钮，参数true表示按下时为LOW电平
+OneButton button2(KEY2, true); // KEY2按钮，参数true表示按下时为LOW电平
 OneButton button3(KEY3, true); // KEY3按钮，参数true表示按下时为LOW电平
+
+bool fanState = false;      // 风扇的当前状态
+bool pumpState = false;     // 水泵的当前状态
+
+// 报警状态管理
+bool fireAlarmActive = false;     // 火灾报警状态
+bool gasAlarmActive = false;      // 煤气报警状态
+unsigned long alarmStartTime = 0; // 报警开始时间
+const unsigned long alarmDisplayTime = 2000; // 报警显示时间(2秒)
 
 //----------------------------------------
 // 函数声明
@@ -64,11 +79,13 @@ void readSensors(float &temperature, float &humidity, float &lux, int &flameValu
 void displayFingerPage(); // 显示指纹管理页面
 void addFinger();  // 添加指纹功能
 void deleteFinger(); // 删除指纹功能
+void displayAlarm(const char* message); // 显示报警信息
 
 // 按钮回调函数
 void toggleLight(); // 切换灯的状态
 void switchPage(); // 切换页面
 void toggleFingerOption(); // 切换指纹选项
+void toggleFan(); // 切换风扇的状态
 
 //----------------------------------------
 // 初始化设置
@@ -90,14 +107,23 @@ void setup()
   // 设置输入引脚
   pinMode(FLAME_SENSOR_PIN, INPUT);  // 火焰传感器
   pinMode(MQ2_SENSOR_PIN, INPUT);    // MQ-2气体传感器
-  pinMode(KEY1, INPUT);              // 按键
+  pinMode(KEY1, INPUT);              // 按键1
+  pinMode(KEY2, INPUT);              // 按键2
   pinMode(KEY3, INPUT);              // 按键3
   pinMode(VOICE, INPUT);             // max4466语音传感器
+  pinMode(ZW_IRQ, INPUT);            // 指纹模块检测引脚设置为输入
   // 设置输出引脚
   pinMode(LIGHT_PIN, OUTPUT);        // LED灯
+  pinMode(FAN_PIN, OUTPUT);          // 风扇
+  pinMode(PUMP_PIN, OUTPUT);         // 水泵
+  pinMode(ZW_CTRL, OUTPUT);          // 指纹模块启动引脚设置为输出
+  
+  // 初始化输出设备状态
+  digitalWrite(PUMP_PIN, LOW);       // 水泵初始状态为关闭
   
   // 配置按钮事件回调
   button1.attachClick(toggleLight); // 短按按钮1切换灯的状态
+  button2.attachClick(toggleFan);   // 短按按钮2切换风扇的状态
   button3.attachLongPressStart(switchPage); // 长按按钮3切换页面
   button3.attachClick(toggleFingerOption); // 短按按钮3切换指纹选项
   
@@ -106,10 +132,12 @@ void setup()
   
   // 增加按键灵敏度设置
   button1.setClickTicks(50);  // 减少点击判定时间为50ms（默认是400ms）
+  button2.setClickTicks(50);  // 减少点击判定时间
   button3.setClickTicks(50);  // 同样减少点击判定时间
   
   // 设置防抖动时间
   button1.setDebounceTicks(10); // 减少防抖时间为10ms（默认是50ms）
+  button2.setDebounceTicks(10); // 减少防抖时间
   button3.setDebounceTicks(10); // 同样减少防抖时间
 }
 
@@ -123,7 +151,15 @@ void loop()
   
   // 检测按钮状态（高频率）
   button1.tick();
+  button2.tick();
   button3.tick();
+  
+  // 检测指纹模块检测引脚状态，控制指纹模块启动引脚输出
+  if (digitalRead(ZW_IRQ) == HIGH) {
+    digitalWrite(ZW_CTRL, HIGH);
+  } else {
+    digitalWrite(ZW_CTRL, LOW);
+  }
   
   // 根据当前页面显示不同内容
   if (currentPage == 0) {
@@ -150,11 +186,49 @@ void loop()
         return;
       }
       
+      // 火灾检测 - 火焰值大于2000自动打开水泵
+      if (flameValue > 2000 && !fireAlarmActive) {
+        // 打开水泵
+        digitalWrite(PUMP_PIN, HIGH);
+        pumpState = true;
+        
+        // 设置报警状态和开始时间
+        fireAlarmActive = true;
+        alarmStartTime = currentTime;
+        
+        // 显示火灾报警信息
+        displayAlarm("检测到发生火灾！！！\n已打开灭火设备");
+      }
+      
+      // 煤气泄漏检测 - MQ-2值大于2000自动打开风扇
+      if (mq2Value > 2000 && !gasAlarmActive) {
+        // 打开风扇
+        digitalWrite(FAN_PIN, HIGH);
+        fanState = true;
+        
+        // 设置报警状态和开始时间
+        gasAlarmActive = true;
+        alarmStartTime = currentTime;
+        
+        // 显示煤气泄漏报警信息
+        displayAlarm("检测到煤气泄漏！！！\n已打开风扇");
+      }
+      
       lastSensorReadTime = currentTime; // 更新上次读取时间
     }
     
-    // 显示所有传感器数据（可以每次循环更新显示）
-    displayData(temperature, humidity, lux, flameValue, mq2Value, dB);
+    // 检查报警显示时间是否结束
+    if ((fireAlarmActive || gasAlarmActive) && currentTime - alarmStartTime >= alarmDisplayTime) {
+      // 重置报警状态
+      fireAlarmActive = false;
+      gasAlarmActive = false;
+    }
+    
+    // 只有在没有报警显示时才显示正常传感器数据
+    if (!fireAlarmActive && !gasAlarmActive) {
+      // 显示所有传感器数据
+      displayData(temperature, humidity, lux, flameValue, mq2Value, dB);
+    }
   } else if (currentPage == 1) {
     // 显示指纹管理页面
     displayFingerPage();
@@ -171,6 +245,35 @@ void loop()
   
   // 短暂延迟，减少CPU占用但保持按键灵敏度
   delay(10);
+}
+
+//----------------------------------------
+// 显示报警信息
+//----------------------------------------
+void displayAlarm(const char* message)
+{
+  // 清空OLED显示屏缓冲区
+  u8g2.clearBuffer();
+  
+  // 使用中文字体显示报警信息
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  
+  // 将消息分行显示
+  char buffer[100];
+  strcpy(buffer, message);
+  
+  char* line = strtok(buffer, "\n");
+  int y = 25;
+  
+  while (line != NULL) {
+    u8g2.setCursor(0, y);
+    u8g2.print(line);
+    line = strtok(NULL, "\n");
+    y += 20;
+  }
+  
+  // 发送缓冲区内容到OLED显示屏
+  u8g2.sendBuffer();
 }
 
 //----------------------------------------
@@ -203,6 +306,16 @@ void toggleLight() {
   lightState = !lightState;
   // 根据灯状态控制灯亮灭
   digitalWrite(LIGHT_PIN, lightState ? HIGH : LOW);
+}
+
+//----------------------------------------
+// 切换风扇状态回调函数
+//----------------------------------------
+void toggleFan() {
+  // 切换风扇的状态
+  fanState = !fanState;
+  // 根据风扇状态控制风扇开关
+  digitalWrite(FAN_PIN, fanState ? HIGH : LOW);
 }
 
 //----------------------------------------
@@ -322,3 +435,4 @@ void displayData(float temperature, float humidity, float lux, int flameValue, i
   // 发送缓冲区内容到OLED显示屏
   u8g2.sendBuffer();
 }
+
