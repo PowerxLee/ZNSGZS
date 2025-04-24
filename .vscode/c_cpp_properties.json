@@ -10,6 +10,8 @@
             "includePath": [
                 "D:/PlatformIO Projects/ZNSGZS/include",
                 "D:/PlatformIO Projects/ZNSGZS/src",
+                "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/EspSoftwareSerial/src",
+                "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/ghostl/src",
                 "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/OneButton/src",
                 "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/BH1750/src",
                 "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/DHT sensor library",
@@ -249,6 +251,8 @@
                 "path": [
                     "D:/PlatformIO Projects/ZNSGZS/include",
                     "D:/PlatformIO Projects/ZNSGZS/src",
+                    "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/EspSoftwareSerial/src",
+                    "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/ghostl/src",
                     "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/OneButton/src",
                     "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/BH1750/src",
                     "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/DHT sensor library",

@@ -5,6 +5,7 @@
 #include <Wire.h>     // I2C通信库
 #include <BH1750.h>   // BH1750光照传感器库
 #include <OneButton.h> // 按键处理库
+#include "SoftwareSerial.h"       //注意添加这个软串口头文件s
 //----------------------------------------
 // 引脚定义
 //----------------------------------------
@@ -39,6 +40,9 @@ DHT dht(DHTPIN, DHTTYPE);
 // 初始化BH1750光照传感器
 BH1750 lightMeter(0x23);
 
+// 初始化软件串口用于指纹模块通信
+SoftwareSerial mySerial(12,13);    //软串口引脚，RX：GPIO12    TX：GPIO13
+
 //----------------------------------------
 // 全局变量
 //----------------------------------------
@@ -48,8 +52,10 @@ bool lastButton3State = HIGH; // 按键3的上一次状态
 unsigned long button3PressTime = 0; // 按键3按下的时间
 bool button3LongPress = false; // 按键3长按标志
 
-int currentPage = 0;         // 当前页面编号，0为主页面，1为指纹管理页面
+int currentPage = 0;         // 当前页面编号，0为主页面，1为添加指纹页面，2为删除指纹页面
 int fingerOption = 0;        // 指纹选项，0为添加指纹，1为删除指纹
+int fingerId = 1;            // 当前选择的指纹ID，默认为1
+int MAX_FINGER_ID = 6;       // 最大指纹ID数量
 
 // 添加时间管理变量
 unsigned long lastSensorReadTime = 0;  // 上次传感器读取时间
@@ -69,6 +75,29 @@ bool gasAlarmActive = false;      // 煤气报警状态
 unsigned long alarmStartTime = 0; // 报警开始时间
 const unsigned long alarmDisplayTime = 2000; // 报警显示时间(2秒)
 
+// 指纹模块状态
+bool enrollingFinger = false;     // 正在注册指纹
+bool deletingFinger = false;      // 正在删除指纹
+unsigned long fingerOpStartTime = 0; // 指纹操作开始时间
+const unsigned long fingerOpTimeout = 10000; // 指纹操作超时时间(10秒)
+
+// 指纹操作反馈提示
+bool showFeedback = false;           // 是否显示反馈
+char feedbackMessage[50] = "";       // 反馈消息
+unsigned long feedbackStartTime = 0;  // 反馈开始时间
+const unsigned long feedbackDisplayTime = 2000; // 反馈显示时间(2秒)
+
+// FPM383C指纹模块命令数组
+uint8_t PS_GetImageBuffer[12] = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,0x01,0x00,0x03,0x01,0x00,0x05};
+uint8_t PS_GetChar1Buffer[13] = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,0x01,0x00,0x04,0x02,0x01,0x00,0x08};
+uint8_t PS_GetChar2Buffer[13] = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,0x01,0x00,0x04,0x02,0x02,0x00,0x09};
+uint8_t PS_AutoEnrollBuffer[17] = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,0x01,0x00,0x08,0x31,'\0','\0',0x04,0x00,0x16,'\0','\0'};
+uint8_t PS_DeleteBuffer[16] = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,0x01,0x00,0x07,0x0C,'\0','\0',0x00,0x01,'\0','\0'};
+uint8_t PS_SearchMBBuffer[17] = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,0x01,0x00,0x08,0x04,0x01,0x00,0x00,0xFF,0xFF,0x02,0x0C};
+uint8_t PS_EmptyBuffer[12] = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,0x01,0x00,0x03,0x0D,0x00,0x11};
+uint8_t PS_CancelBuffer[12] = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,0x01,0x00,0x03,0x30,0x00,0x34};
+uint8_t PS_ReceiveBuffer[20]; // 接收数据缓冲区
+
 //----------------------------------------
 // 函数声明
 //----------------------------------------
@@ -80,12 +109,25 @@ void displayFingerPage(); // 显示指纹管理页面
 void addFinger();  // 添加指纹功能
 void deleteFinger(); // 删除指纹功能
 void displayAlarm(const char* message); // 显示报警信息
+void displayFeedback(); // 显示操作反馈
 
 // 按钮回调函数
 void toggleLight(); // 切换灯的状态
-void switchPage(); // 切换页面
-void toggleFingerOption(); // 切换指纹选项
+void switchPage(); // 切换页面和模式
 void toggleFan(); // 切换风扇的状态
+void nextFingerId(); // 切换下一个指纹ID
+void previousFingerId(); // 切换上一个指纹ID
+void confirmFingerOperation(); // 确认指纹操作
+
+// 指纹模块相关函数
+void FPM383C_SendData(int len, uint8_t PS_Databuffer[]); // 发送数据到指纹模块
+void FPM383C_ReceiveData(uint16_t Timeout); // 从指纹模块接收数据
+uint8_t PS_GetImage(); // 获取指纹图像
+uint8_t PS_GetChar1(); // 生成特征存到缓冲区1
+uint8_t PS_AutoEnroll(uint16_t PageID); // 自动注册指纹
+uint8_t PS_Delete(uint16_t PageID); // 删除指纹
+uint8_t PS_Empty(); // 清空所有指纹
+uint8_t PS_Cancel(); // 取消当前操作
 
 //----------------------------------------
 // 初始化设置
@@ -103,6 +145,9 @@ void setup()
 
   // 初始化BH1750光照传感器
   lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1);
+
+  // 初始化指纹模块串口
+  mySerial.begin(57600);
 
   // 设置输入引脚
   pinMode(FLAME_SENSOR_PIN, INPUT);  // 火焰传感器
@@ -124,8 +169,16 @@ void setup()
   // 配置按钮事件回调
   button1.attachClick(toggleLight); // 短按按钮1切换灯的状态
   button2.attachClick(toggleFan);   // 短按按钮2切换风扇的状态
-  button3.attachLongPressStart(switchPage); // 长按按钮3切换页面
-  button3.attachClick(toggleFingerOption); // 短按按钮3切换指纹选项
+  
+  // 使用k3按钮控制指纹功能
+  button3.attachClick(nextFingerId); // 短按按钮3切换指纹ID
+  button3.attachDoubleClick(confirmFingerOperation); // 双击按钮3执行指纹操作
+  button3.attachLongPressStart(switchPage); // 长按按钮3切换页面/模式
+  
+  // 移除不再使用的回调
+  // button3.attachClick(toggleFingerOption); // 原先的短按按钮3切换指纹选项
+  // button1.attachDoubleClick(nextFingerId); // 原先的双击按钮1切换到下一个指纹ID
+  // button2.attachDoubleClick(confirmFingerOperation); // 原先的双击按钮2确认指纹操作
   
   // 设置按钮长按检测时间（单位：毫秒）
   button3.setPressTicks(1500);
@@ -133,12 +186,12 @@ void setup()
   // 增加按键灵敏度设置
   button1.setClickTicks(50);  // 减少点击判定时间为50ms（默认是400ms）
   button2.setClickTicks(50);  // 减少点击判定时间
-  button3.setClickTicks(50);  // 同样减少点击判定时间
+  button3.setClickTicks(200);  // 设置较长的点击判定时间，以便更容易区分双击
   
   // 设置防抖动时间
   button1.setDebounceTicks(10); // 减少防抖时间为10ms（默认是50ms）
   button2.setDebounceTicks(10); // 减少防抖时间
-  button3.setDebounceTicks(10); // 同样减少防抖时间
+  button3.setDebounceTicks(20); // 增加防抖时间以提高双击检测稳定性
 }
 
 //----------------------------------------
@@ -158,7 +211,21 @@ void loop()
   if (digitalRead(ZW_IRQ) == HIGH) {
     digitalWrite(ZW_CTRL, HIGH);
   } else {
-    digitalWrite(ZW_CTRL, LOW);
+    digitalWrite(ZW_CTRL, HIGH);
+  }
+  
+  // 显示反馈信息（优先级最高）
+  if (showFeedback) {
+    displayFeedback();
+    
+    // 检查是否需要关闭反馈显示
+    if (currentTime - feedbackStartTime >= feedbackDisplayTime) {
+      showFeedback = false;
+    }
+    
+    // 在显示反馈时不执行其他显示操作
+    delay(10);
+    return;
   }
   
   // 根据当前页面显示不同内容
@@ -230,15 +297,20 @@ void loop()
       displayData(temperature, humidity, lux, flameValue, mq2Value, dB);
     }
   } else if (currentPage == 1) {
-    // 显示指纹管理页面
+    // 显示添加指纹页面
     displayFingerPage();
     
-    // 根据选项执行相应功能
-    if (fingerOption == 0) {
-      // 添加指纹功能接口
+    // 根据当前状态处理指纹操作
+    if (enrollingFinger) {
+      // 处理添加指纹
       addFinger();
-    } else {
-      // 删除指纹功能接口
+    }
+  } else if (currentPage == 2) {
+    // 显示删除指纹页面
+    displayFingerPage();
+    
+    // 处理删除指纹
+    if (deletingFinger) {
       deleteFinger();
     }
   }
@@ -319,34 +391,58 @@ void toggleFan() {
 }
 
 //----------------------------------------
-// 切换页面回调函数
+// 切换页面和模式回调函数
 //----------------------------------------
 void switchPage() {
-  // 切换页面
-  currentPage = (currentPage == 0) ? 1 : 0;
-  fingerOption = 0; // 重置指纹选项
-  
-  // 切换页面时显示提示信息
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-  u8g2.setCursor(0, 35);
+  // 修改逻辑：新增删除指纹页面，长按K3在三个页面间循环切换
   if (currentPage == 0) {
-    u8g2.print("切换到主页面");
+    // 从主页面切换到添加指纹页面
+    currentPage = 1;
+    
+    // 重置指纹相关状态
+    fingerOption = 0; // 设置为添加模式
+    fingerId = 1;     // 重置指纹ID为1
+    
+    // 切换页面时显示提示信息
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setCursor(0, 35);
+    u8g2.print("切换到添加指纹");
+    u8g2.sendBuffer();
+    delay(1000); // 显示1秒切换提示
+  } else if (currentPage == 1) {
+    // 从添加指纹页面切换到删除指纹页面
+    currentPage = 2;
+    
+    // 设置为删除模式
+    fingerOption = 1;
+    fingerId = 1;     // 重置指纹ID为1
+    
+    // 切换页面时显示提示信息
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setCursor(0, 35);
+    u8g2.print("切换到删除指纹");
+    u8g2.sendBuffer();
+    delay(1000); // 显示1秒切换提示
   } else {
-    u8g2.print("切换到指纹管理");
-  }
-  u8g2.sendBuffer();
-  delay(1000); // 显示1秒切换提示
-}
-
-//----------------------------------------
-// 切换指纹选项回调函数
-//----------------------------------------
-void toggleFingerOption() {
-  // 仅在指纹管理页面生效
-  if (currentPage == 1) {
-    // 切换功能选项
-    fingerOption = (fingerOption == 0) ? 1 : 0;
+    // 从删除指纹页面返回主页面
+    currentPage = 0;
+    
+    // 重置指纹相关状态
+    fingerOption = 0; // 重置指纹选项
+    fingerId = 1;     // 重置指纹ID为1
+    enrollingFinger = false; // 取消任何正在进行的指纹操作
+    deletingFinger = false;
+    showFeedback = false;    // 取消任何反馈显示
+    
+    // 切换页面时显示提示信息
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+    u8g2.setCursor(0, 35);
+    u8g2.print("切换到主页面");
+    u8g2.sendBuffer();
+    delay(1000); // 显示1秒切换提示
   }
 }
 
@@ -363,33 +459,122 @@ void displayFingerPage()
   u8g2.setCursor(32, 14);
   u8g2.print("指纹管理");
 
-  // 显示功能选项
-  u8g2.setCursor(0, 38);
-  u8g2.print(fingerOption == 0 ? "→ 添加指纹" : "  添加指纹");
+  // 显示操作提示
+  u8g2.setFont(u8g2_font_wqy12_t_gb2312);
   
-  u8g2.setCursor(0, 60);
-  u8g2.print(fingerOption == 1 ? "→ 删除指纹" : "  删除指纹");
+  // 显示当前模式标题
+  u8g2.setCursor(0, 30);
+  if (currentPage == 1) {
+    u8g2.print("添加指纹模式");
+  } else if (currentPage == 2) {
+    u8g2.print("删除指纹模式");
+  }
+  
+  // 显示选择的指纹ID
+  u8g2.setCursor(0, 46);
+  u8g2.print("ID: ");
+  
+  // 显示6个ID，当前选择的ID高亮显示
+  for (int i = 1; i <= MAX_FINGER_ID; i++) {
+    if (i == fingerId) {
+      u8g2.print("[");
+      u8g2.print(i);
+      u8g2.print("]");
+    } else {
+      u8g2.print(" ");
+      u8g2.print(i);
+      u8g2.print(" ");
+    }
+  }
+  
+  // 显示操作说明
+  u8g2.setCursor(0, 62);
+  if (enrollingFinger || deletingFinger) {
+    u8g2.print("正在处理，请稍候...");
+  } else {
+    u8g2.print("短按:切换ID 双击:执行");
+  }
 
   // 发送缓冲区内容到OLED显示屏
   u8g2.sendBuffer();
 }
 
 //----------------------------------------
-// 添加指纹功能入口
+// 添加指纹功能
 //----------------------------------------
 void addFinger()
 {
-  // 此处只实现功能入口，后续可扩展完整功能
-  // 可以在这里添加与指纹模块通信的代码
+  // 仅在添加模式活跃时执行
+  if (!enrollingFinger) return;
+
+  // 检查是否超时
+  if (millis() - fingerOpStartTime > fingerOpTimeout) {
+    // 超时，取消操作
+    enrollingFinger = false;
+    strcpy(feedbackMessage, "添加指纹超时");
+    showFeedback = true;
+    feedbackStartTime = millis();
+    return;
+  }
+
+  // 检测指纹模块是否唤醒（通过ZW_IRQ引脚）
+  if (digitalRead(ZW_IRQ) == HIGH) {
+    // 指纹模块已唤醒，开始添加指纹
+    digitalWrite(ZW_CTRL, HIGH); // 激活指纹模块
+    
+    // 执行添加指纹操作
+    uint8_t result = PS_AutoEnroll(fingerId - 1); // 注意ID从0开始，界面从1开始
+    
+    // 处理添加结果
+    enrollingFinger = false;
+    if (result == 0x00) {
+      // 添加成功
+      strcpy(feedbackMessage, "指纹添加成功");
+    } else {
+      // 添加失败
+      strcpy(feedbackMessage, "指纹添加失败");
+    }
+    
+    // 显示反馈信息
+    showFeedback = true;
+    feedbackStartTime = millis();
+  }
 }
 
 //----------------------------------------
-// 删除指纹功能入口
+// 删除指纹功能
 //----------------------------------------
 void deleteFinger()
 {
-  // 此处只实现功能入口，后续可扩展完整功能
-  // 可以在这里添加与指纹模块通信的代码
+  // 仅在删除模式活跃时执行
+  if (!deletingFinger) return;
+
+  // 检查是否超时
+  if (millis() - fingerOpStartTime > fingerOpTimeout) {
+    // 超时，取消操作
+    deletingFinger = false;
+    strcpy(feedbackMessage, "删除指纹超时");
+    showFeedback = true;
+    feedbackStartTime = millis();
+    return;
+  }
+
+  // 执行删除指纹操作
+  uint8_t result = PS_Delete(fingerId - 1); // 注意ID从0开始，界面从1开始
+  
+  // 处理删除结果
+  deletingFinger = false;
+  if (result == 0x00) {
+    // 删除成功
+    strcpy(feedbackMessage, "指纹删除成功");
+  } else {
+    // 删除失败
+    strcpy(feedbackMessage, "指纹删除失败");
+  }
+  
+  // 显示反馈信息
+  showFeedback = true;
+  feedbackStartTime = millis();
 }
 
 //----------------------------------------
@@ -434,5 +619,169 @@ void displayData(float temperature, float humidity, float lux, int flameValue, i
 
   // 发送缓冲区内容到OLED显示屏
   u8g2.sendBuffer();
+}
+
+//----------------------------------------
+// 指纹模块相关函数实现
+//----------------------------------------
+
+/**
+ * 发送数据到指纹模块
+ */
+void FPM383C_SendData(int len, uint8_t PS_Databuffer[])
+{
+  mySerial.write(PS_Databuffer, len);
+  mySerial.flush();
+}
+
+/**
+ * 从指纹模块接收数据
+ */
+void FPM383C_ReceiveData(uint16_t Timeout)
+{
+  uint8_t i = 0;
+  while(mySerial.available() == 0 && (--Timeout))
+  {
+    delay(1);
+  }
+  while(mySerial.available() > 0)
+  {
+    delay(2);
+    PS_ReceiveBuffer[i++] = mySerial.read();
+    if(i > 15) break; 
+  }
+}
+
+/**
+ * 获取指纹图像
+ */
+uint8_t PS_GetImage()
+{
+  FPM383C_SendData(12, PS_GetImageBuffer);
+  FPM383C_ReceiveData(2000);
+  return PS_ReceiveBuffer[6] == 0x07 ? PS_ReceiveBuffer[9] : 0xFF;
+}
+
+/**
+ * 生成特征存到缓冲区1
+ */
+uint8_t PS_GetChar1()
+{
+  FPM383C_SendData(13, PS_GetChar1Buffer);
+  FPM383C_ReceiveData(2000);
+  return PS_ReceiveBuffer[6] == 0x07 ? PS_ReceiveBuffer[9] : 0xFF;
+}
+
+/**
+ * 取消当前操作
+ */
+uint8_t PS_Cancel()
+{
+  FPM383C_SendData(12, PS_CancelBuffer);
+  FPM383C_ReceiveData(2000);
+  return PS_ReceiveBuffer[6] == 0x07 ? PS_ReceiveBuffer[9] : 0xFF;
+}
+
+/**
+ * 自动注册指纹
+ */
+uint8_t PS_AutoEnroll(uint16_t PageID)
+{
+  PS_AutoEnrollBuffer[10] = (PageID>>8);
+  PS_AutoEnrollBuffer[11] = (PageID);
+  PS_AutoEnrollBuffer[15] = (0x54+PS_AutoEnrollBuffer[10]+PS_AutoEnrollBuffer[11])>>8;
+  PS_AutoEnrollBuffer[16] = (0x54+PS_AutoEnrollBuffer[10]+PS_AutoEnrollBuffer[11]);
+  FPM383C_SendData(17, PS_AutoEnrollBuffer);
+  FPM383C_ReceiveData(10000);
+  return PS_ReceiveBuffer[6] == 0x07 ? PS_ReceiveBuffer[9] : 0xFF;
+}
+
+/**
+ * 删除指纹
+ */
+uint8_t PS_Delete(uint16_t PageID)
+{
+  PS_DeleteBuffer[10] = (PageID>>8);
+  PS_DeleteBuffer[11] = (PageID);
+  PS_DeleteBuffer[14] = (0x15+PS_DeleteBuffer[10]+PS_DeleteBuffer[11])>>8;
+  PS_DeleteBuffer[15] = (0x15+PS_DeleteBuffer[10]+PS_DeleteBuffer[11]);
+  FPM383C_SendData(16, PS_DeleteBuffer);
+  FPM383C_ReceiveData(2000);
+  return PS_ReceiveBuffer[6] == 0x07 ? PS_ReceiveBuffer[9] : 0xFF;
+}
+
+/**
+ * 清空所有指纹
+ */
+uint8_t PS_Empty()
+{
+  FPM383C_SendData(12, PS_EmptyBuffer);
+  FPM383C_ReceiveData(2000);
+  return PS_ReceiveBuffer[6] == 0x07 ? PS_ReceiveBuffer[9] : 0xFF;
+}
+
+//----------------------------------------
+// 显示操作反馈
+//----------------------------------------
+void displayFeedback()
+{
+  // 清空OLED显示屏缓冲区
+  u8g2.clearBuffer();
+  
+  // 使用中文字体显示反馈信息
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  
+  // 计算文本居中位置
+  int y = 35;
+  
+  u8g2.setCursor(0, y);
+  u8g2.print(feedbackMessage);
+  
+  // 发送缓冲区内容到OLED显示屏
+  u8g2.sendBuffer();
+}
+
+//----------------------------------------
+// 切换下一个指纹ID回调函数
+//----------------------------------------
+void nextFingerId() {
+  // 仅在指纹管理页面生效
+  if ((currentPage == 1 || currentPage == 2) && !enrollingFinger && !deletingFinger) {
+    // 切换到下一个ID，循环切换
+    fingerId = (fingerId % MAX_FINGER_ID) + 1;
+  }
+}
+
+//----------------------------------------
+// 切换上一个指纹ID回调函数
+//----------------------------------------
+void previousFingerId() {
+  // 仅在指纹管理页面生效
+  if ((currentPage == 1 || currentPage == 2) && !enrollingFinger && !deletingFinger) {
+    // 切换到上一个ID，循环切换
+    fingerId = (fingerId > 1) ? (fingerId - 1) : MAX_FINGER_ID;
+  }
+}
+
+//----------------------------------------
+// 确认指纹操作回调函数
+//----------------------------------------
+void confirmFingerOperation() {
+  // 仅在指纹管理页面生效
+  if ((currentPage == 1 || currentPage == 2) && !enrollingFinger && !deletingFinger) {
+    if (currentPage == 1) {
+      // 在添加指纹页面，开始添加指纹
+      enrollingFinger = true;
+      fingerOpStartTime = millis();
+      // 更新页面提示正在处理
+      displayFingerPage();
+    } else if (currentPage == 2) {
+      // 在删除指纹页面，开始删除指纹
+      deletingFinger = true;
+      fingerOpStartTime = millis();
+      // 更新页面提示正在处理
+      displayFingerPage();
+    }
+  }
 }
 
