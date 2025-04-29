@@ -10,6 +10,8 @@
             "includePath": [
                 "D:/PlatformIO Projects/ZNSGZS/include",
                 "D:/PlatformIO Projects/ZNSGZS/src",
+                "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
+                "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/PubSubClient/src",
                 "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/EspSoftwareSerial/src",
                 "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/ghostl/src",
                 "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/OneButton/src",
@@ -241,7 +243,6 @@
                 "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                 "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                 "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/src",
-                "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                 "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                 "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
                 ""
@@ -251,6 +252,8 @@
                 "path": [
                     "D:/PlatformIO Projects/ZNSGZS/include",
                     "D:/PlatformIO Projects/ZNSGZS/src",
+                    "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
+                    "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/PubSubClient/src",
                     "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/EspSoftwareSerial/src",
                     "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/ghostl/src",
                     "D:/PlatformIO Projects/ZNSGZS/.pio/libdeps/esp32s3/OneButton/src",
@@ -482,7 +485,6 @@
                     "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                     "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                     "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/src",
-                    "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                     "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                     "C:/Users/19865/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
                     ""

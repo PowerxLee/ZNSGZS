@@ -1,5 +1,6 @@
-adafruit/DHT sensor library@^1.4.6
+knolleary/PubSubClient@^2.8
 mathertel/OneButton@^2.6.1
-claws/BH1750@^1.3.0
-plerup/EspSoftwareSerial@^8.2.0
+adafruit/DHT sensor library@^1.4.6
 olikraus/U8g2@^2.36.2
+plerup/EspSoftwareSerial@^8.2.0
+claws/BH1750@^1.3.0
