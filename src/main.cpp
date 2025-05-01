@@ -24,6 +24,7 @@
 #define LIGHT_PIN 16        // LED灯引脚
 #define FAN_PIN 14          // 风扇控制引脚
 #define PUMP_PIN 17         // 水泵控制引脚
+#define BUZZER_PIN 42       // 蜂鸣器引脚
 
 // 输入设备引脚
 #define KEY1 47             // 按键引脚
@@ -70,12 +71,18 @@ OneButton button3(KEY3, true); // KEY3按钮，参数true表示按下时为LOW�
 
 bool fanState = false;      // 风扇的当前状态
 bool pumpState = false;     // 水泵的当前状态
+bool fanManualControl = false;  // 风扇手动控制标志
+bool pumpManualControl = false; // 水泵手动控制标志
 
 // 报警状态管理
 bool fireAlarmActive = false;     // 火灾报警状态
 bool gasAlarmActive = false;      // 煤气报警状态
-unsigned long alarmStartTime = 0; // 报警开始时间
-const unsigned long alarmDisplayTime = 2000; // 报警显示时间(2秒)
+
+// 蜂鸣器报警状态管理
+bool buzzerActive = false;         // 蜂鸣器激活状态
+unsigned long lastBuzzerToggleTime = 0;  // 上次蜂鸣器状态切换时间
+unsigned long buzzerToggleInterval = 500; // 蜂鸣器状态切换间隔（毫秒）
+bool buzzerState = false;          // 蜂鸣器当前状态（高/低）
 
 // 指纹模块状态
 bool enrollingFinger = false;     // 正在注册指纹
@@ -101,8 +108,8 @@ uint8_t PS_CancelBuffer[12] = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,0x01,0x00,0x03,0x30
 uint8_t PS_ReceiveBuffer[20]; // 接收数据缓冲区
 
 // WiFi连接相关变量
-const char* ssid = "WLAN";           // WiFi名称
-const char* password = "12346578";       // WiFi密码
+const char* ssid = "12345";           // WiFi名称
+const char* password = "00000000";       // WiFi密码
 bool wifiConnected = false;              // WiFi连接状态
 unsigned long lastWiFiCheckTime = 0;     // 上次WiFi检查时间
 const unsigned long wifiCheckInterval = 5000;  // WiFi检查间隔时间(5秒)
@@ -119,7 +126,6 @@ void readSensors(float &temperature, float &humidity, float &lux, int &flameValu
 void displayFingerPage(); // 显示指纹管理页面
 void addFinger();  // 添加指纹功能
 void deleteFinger(); // 删除指纹功能
-void displayAlarm(const char* message); // 显示报警信息
 void displayFeedback(); // 显示操作反馈
 
 // 按钮回调函数
@@ -144,6 +150,37 @@ uint8_t PS_Cancel(); // 取消当前操作
 void connectToWiFi();                   // 连接WiFi
 void checkWiFiStatus();                 // 检查WiFi状态
 void displayWiFiPage();                 // 显示WiFi状态页面
+
+//----------------------------------------
+// 蜂鸣器控制函数
+//----------------------------------------
+void handleBuzzer() {
+  // 如果存在报警事件，激活蜂鸣器
+  if (fireAlarmActive || gasAlarmActive) {
+    buzzerActive = true;
+  } else {
+    // 如果所有报警解除，停止蜂鸣器
+    buzzerActive = false;
+    buzzerState = false;
+    digitalWrite(BUZZER_PIN, LOW);
+    return;
+  }
+  
+  // 如果蜂鸣器激活，处理高低交替报警
+  if (buzzerActive) {
+    unsigned long currentTime = millis();
+    
+    // 检查是否需要切换蜂鸣器状态
+    if (currentTime - lastBuzzerToggleTime >= buzzerToggleInterval) {
+      // 切换蜂鸣器状态 (高/低)
+      buzzerState = !buzzerState;
+      // 更新蜂鸣器输出（注意是高电平触发）
+      digitalWrite(BUZZER_PIN, buzzerState ? HIGH : LOW);
+      // 更新上次切换时间
+      lastBuzzerToggleTime = currentTime;
+    }
+  }
+}
 
 //----------------------------------------
 // 初始化设置
@@ -181,9 +218,11 @@ void setup()
   pinMode(FAN_PIN, OUTPUT);          // 风扇
   pinMode(PUMP_PIN, OUTPUT);         // 水泵
   pinMode(ZW_CTRL, OUTPUT);          // 指纹模块启动引脚设置为输出
+  pinMode(BUZZER_PIN, OUTPUT);       // 蜂鸣器引脚设置为输出
   
   // 初始化输出设备状态
   digitalWrite(PUMP_PIN, LOW);       // 水泵初始状态为关闭
+  digitalWrite(BUZZER_PIN, LOW);     // 蜂鸣器初始状态为关闭
   
   // 配置按钮事件回调
   button1.attachClick(toggleLight); // 短按按钮1切换灯的状态
@@ -276,49 +315,50 @@ void loop()
         return;
       }
       
-      // 火灾检测 - 火焰值大于2000自动打开水泵
-      if (flameValue > 2000 && !fireAlarmActive) {
+      // 火灾检测 - 火焰值大于50自动打开水泵（映射到0-100后的新阈值）
+      if (flameValue > 50) {
         // 打开水泵
         digitalWrite(PUMP_PIN, HIGH);
         pumpState = true;
-        
-        // 设置报警状态和开始时间
+        pumpManualControl = false; // 自动控制模式
+        // 设置火灾报警状态
         fireAlarmActive = true;
-        alarmStartTime = currentTime;
-        
-        // 显示火灾报警信息
-        displayAlarm("检测到发生火灾！！！\n已打开灭火设备");
+      } else {
+        // 火灾解除
+        fireAlarmActive = false;
+        // 只有在非手动控制模式下才自动关闭水泵
+        if (!pumpManualControl) {
+          digitalWrite(PUMP_PIN, LOW);
+          pumpState = false;
+        }
       }
       
-      // 煤气泄漏检测 - MQ-2值大于2000自动打开风扇
-      if (mq2Value > 2000 && !gasAlarmActive) {
+      // 煤气泄漏检测 - MQ-2值大于50自动打开风扇（映射到0-100后的新阈值）
+      if (mq2Value > 50) {
         // 打开风扇
         digitalWrite(FAN_PIN, HIGH);
         fanState = true;
-        
-        // 设置报警状态和开始时间
+        fanManualControl = false; // 自动控制模式
+        // 设置煤气泄漏报警状态
         gasAlarmActive = true;
-        alarmStartTime = currentTime;
-        
-        // 显示煤气泄漏报警信息
-        displayAlarm("检测到煤气泄漏！！！\n已打开风扇");
+      } else {
+        // 煤气泄漏解除
+        gasAlarmActive = false;
+        // 只有在非手动控制模式下才自动关闭风扇
+        if (!fanManualControl) {
+          digitalWrite(FAN_PIN, LOW);
+          fanState = false;
+        }
       }
       
       lastSensorReadTime = currentTime; // 更新上次读取时间
     }
     
-    // 检查报警显示时间是否结束
-    if ((fireAlarmActive || gasAlarmActive) && currentTime - alarmStartTime >= alarmDisplayTime) {
-      // 重置报警状态
-      fireAlarmActive = false;
-      gasAlarmActive = false;
-    }
+    // 处理蜂鸣器报警
+    handleBuzzer();
     
-    // 只有在没有报警显示时才显示正常传感器数据
-    if (!fireAlarmActive && !gasAlarmActive) {
-      // 显示所有传感器数据
-      displayData(temperature, humidity, lux, flameValue, mq2Value, dB);
-    }
+    // 显示所有传感器数据
+    displayData(temperature, humidity, lux, flameValue, mq2Value, dB);
   } else if (currentPage == 1) {
     // 显示添加指纹页面
     displayFingerPage();
@@ -346,47 +386,24 @@ void loop()
 }
 
 //----------------------------------------
-// 显示报警信息
-//----------------------------------------
-void displayAlarm(const char* message)
-{
-  // 清空OLED显示屏缓冲区
-  u8g2.clearBuffer();
-  
-  // 使用中文字体显示报警信息
-  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-  
-  // 将消息分行显示
-  char buffer[100];
-  strcpy(buffer, message);
-  
-  char* line = strtok(buffer, "\n");
-  int y = 25;
-  
-  while (line != NULL) {
-    u8g2.setCursor(0, y);
-    u8g2.print(line);
-    line = strtok(NULL, "\n");
-    y += 20;
-  }
-  
-  // 发送缓冲区内容到OLED显示屏
-  u8g2.sendBuffer();
-}
-
-//----------------------------------------
 // 读取所有传感器数据
 //----------------------------------------
 void readSensors(float &temperature, float &humidity, float &lux, int &flameValue, int &mq2Value, int &dB)
 {
   // 读取火焰传感器的模拟值
-  flameValue = 4095 - analogRead(FLAME_SENSOR_PIN);
-
+  int rawFlameValue = 4095 - analogRead(FLAME_SENSOR_PIN);
+  // 映射火焰传感器值到0-100范围
+  flameValue = map(rawFlameValue, 0, 4095, 0, 100);
+  
   // 读取MQ-2传感器的模拟值
-  mq2Value = analogRead(MQ2_SENSOR_PIN);
-
+  int rawMq2Value = analogRead(MQ2_SENSOR_PIN);
+  // 映射MQ-2传感器值到0-100范围
+  mq2Value = map(rawMq2Value, 0, 4095, 0, 100);
+  
   // 读取max4466语音传感器
-  dB = analogRead(VOICE); 
+  int rawDbValue = analogRead(VOICE);
+  // 映射语音传感器值到0-100范围
+  dB = map(rawDbValue, 0, 4095, 0, 100);
 
   // 读取DHT11的温湿度数据
   humidity = dht.readHumidity();       // 读取湿度
@@ -410,10 +427,24 @@ void toggleLight() {
 // 切换风扇状态回调函数
 //----------------------------------------
 void toggleFan() {
-  // 切换风扇的状态
+  // 切换风扇的状态和手动控制标志
   fanState = !fanState;
+  fanManualControl = fanState; // 如果开启则设为手动控制，如果关闭则取消手动控制
+  
   // 根据风扇状态控制风扇开关
   digitalWrite(FAN_PIN, fanState ? HIGH : LOW);
+}
+
+//----------------------------------------
+// 切换水泵状态函数（新增函数）
+//----------------------------------------
+void togglePump() {
+  // 切换水泵的状态和手动控制标志
+  pumpState = !pumpState;
+  pumpManualControl = pumpState; // 如果开启则设为手动控制，如果关闭则取消手动控制
+  
+  // 根据水泵状态控制水泵开关
+  digitalWrite(PUMP_PIN, pumpState ? HIGH : LOW);
 }
 
 //----------------------------------------
@@ -634,8 +665,9 @@ void displayData(float temperature, float humidity, float lux, int flameValue, i
   u8g2.setCursor(0, 30);
   u8g2.print("Flame: ");
   u8g2.print(flameValue);
-  u8g2.print(" MQ-2: ");
+  u8g2.print("%  MQ-2: ");
   u8g2.print(mq2Value);
+  u8g2.print("%");
 
   // 显示光照强度和分贝值（第三行）
   u8g2.setCursor(0, 45);
@@ -644,6 +676,7 @@ void displayData(float temperature, float humidity, float lux, int flameValue, i
   u8g2.print("lx");
   u8g2.print("  dB: ");
   u8g2.print(dB);
+  u8g2.print("dB");
 
   // 显示温湿度值（第四行）
   u8g2.setCursor(0, 60);
@@ -653,7 +686,7 @@ void displayData(float temperature, float humidity, float lux, int flameValue, i
   u8g2.print("H: ");
   u8g2.print(humidity);
   u8g2.print("%");
-
+  
   // 发送缓冲区内容到OLED显示屏
   u8g2.sendBuffer();
 }
