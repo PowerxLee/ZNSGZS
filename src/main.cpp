@@ -7,7 +7,7 @@
 #include <OneButton.h> // 按键处理库
 #include "SoftwareSerial.h"       //注意添加这个软串口头文件s
 #include<WiFi.h>
-#include<PubSubClient.h>
+
 //----------------------------------------
 // 引脚定义
 //----------------------------------------
@@ -116,6 +116,13 @@ const unsigned long wifiCheckInterval = 5000;  // WiFi检查间隔时间(5秒)
 int wifiSignalStrength = 0;              // WiFi信号强度(RSSI值)
 bool showingWiFiPage = false;            // 是否显示WiFi页面
 
+// MQTT连接状态和数据上传间隔
+bool mqtt_connected = false;
+unsigned long lastMqttReconnectAttempt = 0;
+const unsigned long mqttReconnectInterval = 5000;  // 重连间隔5秒
+unsigned long lastDataUploadTime = 0;
+const unsigned long dataUploadInterval = 10000;    // 每10秒上传一次数据
+
 //----------------------------------------
 // 函数声明
 //----------------------------------------
@@ -132,6 +139,7 @@ void displayFeedback(); // 显示操作反馈
 void toggleLight(); // 切换灯的状态
 void switchPage(); // 切换页面和模式
 void toggleFan(); // 切换风扇的状态
+void togglePump(); // 切换水泵状态
 void nextFingerId(); // 切换下一个指纹ID
 void previousFingerId(); // 切换上一个指纹ID
 void confirmFingerOperation(); // 确认指纹操作
@@ -149,7 +157,6 @@ uint8_t PS_Cancel(); // 取消当前操作
 // WiFi相关函数
 void connectToWiFi();                   // 连接WiFi
 void checkWiFiStatus();                 // 检查WiFi状态
-void displayWiFiPage();                 // 显示WiFi状态页面
 
 //----------------------------------------
 // 蜂鸣器控制函数
@@ -376,9 +383,6 @@ void loop()
     if (deletingFinger) {
       deleteFinger();
     }
-  } else if (currentPage == 3) {
-    // 显示WiFi连接状态页面
-    displayWiFiPage();
   }
   
   // 短暂延迟，减少CPU占用但保持按键灵敏度
@@ -451,7 +455,7 @@ void togglePump() {
 // 切换页面和模式回调函数
 //----------------------------------------
 void switchPage() {
-  // 修改逻辑：增加WiFi页面，在四个页面间循环切换
+  // 修改逻辑：在三个页面间循环切换（去掉WiFi页面）
   if (currentPage == 0) {
     // 从主页面切换到添加指纹页面
     currentPage = 1;
@@ -482,19 +486,8 @@ void switchPage() {
     u8g2.print("切换到删除指纹");
     u8g2.sendBuffer();
     delay(1000); // 显示1秒切换提示
-  } else if (currentPage == 2) {
-    // 从删除指纹页面切换到WiFi页面
-    currentPage = 3;
-    
-    // 切换页面时显示提示信息
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-    u8g2.setCursor(0, 35);
-    u8g2.print("切换到WiFi页面");
-    u8g2.sendBuffer();
-    delay(1000); // 显示1秒切换提示
   } else {
-    // 从WiFi页面返回主页面
+    // 从删除指纹页面返回主页面
     currentPage = 0;
     
     // 重置指纹相关状态
@@ -657,6 +650,13 @@ void displayData(float temperature, float humidity, float lux, int flameValue, i
   u8g2.setFont(u8g2_font_wqy16_t_gb2312);
   u8g2.setCursor(12, 14);
   u8g2.print("智能舍管助手");
+  
+  // 在标题行右侧显示WiFi图标
+  if (wifiConnected) {
+    // 使用符号字体绘制WiFi图标
+    u8g2.setFont(u8g2_font_siji_t_6x10);
+    u8g2.drawGlyph(110, 12, 0x0e21a); // WiFi图标的Unicode值
+  }
 
   // 切换到英文字体显示数据
   u8g2.setFont(u8g2_font_ncenB08_tr);
@@ -877,7 +877,6 @@ void connectToWiFi() {
   unsigned long startTime = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) {
     delay(500);
-    // 可以在这里添加一些连接过程的动画显示
   }
   
   // 判断连接结果
@@ -931,54 +930,4 @@ void checkWiFiStatus() {
   }
 }
 
-/**
- * 显示WiFi连接状态页面
- */
-void displayWiFiPage() {
-  // 清空OLED显示屏缓冲区
-  u8g2.clearBuffer();
-  
-  // 显示标题
-  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-  u8g2.setCursor(16, 14);
-  u8g2.print("WiFi状态");
-  
-  // 显示WiFi状态信息
-  u8g2.setFont(u8g2_font_wqy12_t_gb2312);
-  
-  // 显示连接状态
-  u8g2.setCursor(0, 28);
-  u8g2.print("状态: ");
-  if (wifiConnected) {
-    u8g2.print("已连接");
-  } else {
-    u8g2.print("未连接");
-  }
-  
-  // 显示WiFi名称
-  u8g2.setCursor(0, 40);
-  u8g2.print("SSID: ");
-  u8g2.print(ssid);
-  
-  // 如果已连接，显示IP地址和信号强度
-  if (wifiConnected) {
-    // 显示IP地址
-    u8g2.setCursor(0, 52);
-    u8g2.print("IP: ");
-    u8g2.print(WiFi.localIP().toString().c_str());
-    
-    // 显示信号强度
-    u8g2.setCursor(0, 64);
-    u8g2.print("信号: ");
-    u8g2.print(wifiSignalStrength);
-    u8g2.print("dBm");
-  } else {
-    // 未连接时显示尝试重连的提示
-    u8g2.setCursor(0, 52);
-    u8g2.print("正在尝试重连...");
-  }
-  
-  // 发送缓冲区内容到OLED显示屏
-  u8g2.sendBuffer();
-}
 
