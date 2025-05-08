@@ -7,6 +7,9 @@
 #include <OneButton.h> // 按键处理库
 #include "SoftwareSerial.h"       //注意添加这个软串口头文件s
 #include<WiFi.h>
+#include <PubSubClient.h> // MQTT库
+#include <ArduinoJson.h>  // JSON库
+#include <Ticker.h>      // 定时器库
 
 //----------------------------------------
 // 引脚定义
@@ -32,6 +35,27 @@
 #define KEY3 39             // 按键3引脚
 
 //----------------------------------------
+// OneNET MQTT 配置
+//----------------------------------------
+#define product_id "b06TB0vsAb" // 改为自己的产品ID
+#define device_id "ZNSGZS"  // 改为自己的设备ID
+#define token "version=2018-10-31&res=products%2Fb06TB0vsAb%2Fdevices%2FZNSGZS&et=1904453080&method=md5&sign=gPCS6cVaOsl9Azswy57DBA%3D%3D"       // 改为自己的token
+
+const char* mqtt_server = "mqtts.heclouds.com"; // MQTT服务器地址
+const int mqtt_port = 1883; // MQTT服务器端口
+
+#define ONENET_TOPIC_PROP_POST "$sys/" product_id "/" device_id "/thing/property/post"
+// 设备属性上报请求,设备---->OneNET
+#define ONENET_TOPIC_PROP_SET "$sys/" product_id "/" device_id "/thing/property/set"
+// 设备属性设置请求,OneNET---->设备
+#define ONENET_TOPIC_PROP_POST_REPLY "$sys/" product_id "/" device_id "/thing/property/post/reply"
+// 设备属性上报响应,OneNET---->设备
+#define ONENET_TOPIC_PROP_SET_REPLY "$sys/" product_id "/" device_id "/thing/property/set_reply"
+// 设备属性设置响应,设备---->OneNET
+#define ONENET_TOPIC_PROP_FORMAT "{\"id\":\"%u\",\"version\":\"1.0\",\"params\":%s}"
+// 设备属性格式模板
+
+//----------------------------------------
 // 全局对象初始化
 //----------------------------------------
 // 初始化OLED显示屏 SCL-21   SDA-40
@@ -46,6 +70,12 @@ BH1750 lightMeter(0x23);
 // 初始化软件串口用于指纹模块通信
 SoftwareSerial mySerial(12,13);    //软串口引脚，RX：GPIO12    TX：GPIO13
 
+// MQTT相关变量
+int postMsgId = 0; // 消息ID,每次上报属性时递增
+WiFiClient espClient; // 创建WiFiClient对象
+PubSubClient mqttClient(espClient); // 创建PubSubClient对象
+Ticker mqttTicker; // 创建定时器对象，用于定时上报数据
+
 //----------------------------------------
 // 全局变量
 //----------------------------------------
@@ -54,6 +84,14 @@ bool lastButtonState = HIGH; // 按键的上一次状态
 bool lastButton3State = HIGH; // 按键3的上一次状态
 unsigned long button3PressTime = 0; // 按键3按下的时间
 bool button3LongPress = false; // 按键3长按标志
+
+// 传感器阈值变量
+float temperatureThreshold = 30.0;   // 温度阈值（摄氏度）
+float humidityThreshold = 80.0;      // 湿度阈值（百分比）
+float lightThreshold = 30000.0;        // 亮度阈值（勒克斯）
+int decibelThreshold = 80;           // 分贝阈值（dB）
+int flameThreshold = 50;             // 火焰阈值（0-100）
+int smokeThreshold = 60;             // 烟雾阈值（0-100）
 
 int currentPage = 0;         // 当前页面编号，0为主页面，1为添加指纹页面，2为删除指纹页面
 int fingerOption = 0;        // 指纹选项，0为添加指纹，1为删除指纹
@@ -158,6 +196,11 @@ uint8_t PS_Cancel(); // 取消当前操作
 void connectToWiFi();                   // 连接WiFi
 void checkWiFiStatus();                 // 检查WiFi状态
 
+// MQTT相关函数
+void connectToOneNET();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void publishSensorData();
+
 //----------------------------------------
 // 蜂鸣器控制函数
 //----------------------------------------
@@ -255,6 +298,17 @@ void setup()
   
   // 初始化WiFi连接
   connectToWiFi();
+  
+  // 初始化MQTT客户端
+  mqttClient.setServer(mqtt_server, mqtt_port);
+  mqttClient.setCallback(mqttCallback);
+  
+  // 连接WiFi后连接OneNET
+  if (wifiConnected) {
+    connectToOneNET();
+    // 设置10秒定时上报数据
+    mqttTicker.attach(1, publishSensorData);
+  }
 }
 
 //----------------------------------------
@@ -311,7 +365,6 @@ void loop()
       // 检查DHT11数据是否有效
       if (isnan(humidity) || isnan(temperature))
       {
-        // 如果读取失败，显示错误信息
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
         u8g2.setCursor(0, 15);
@@ -322,8 +375,27 @@ void loop()
         return;
       }
       
-      // 火灾检测 - 火焰值大于50自动打开水泵（映射到0-100后的新阈值）
-      if (flameValue > 50) {
+      // 温度检测 - 温度大于阈值自动打开风扇
+      if (temperature > temperatureThreshold) {
+        // 打开风扇
+        digitalWrite(FAN_PIN, HIGH);
+        fanState = true;
+        fanManualControl = false; // 自动控制模式
+      } else{
+        // 只有在非手动控制模式下才自动关闭风扇
+        if (!fanManualControl) {
+          digitalWrite(FAN_PIN, LOW);
+          fanState = false;
+        }
+      }
+      
+      // 湿度检测 - 湿度大于阈值可以添加相应操作
+      if (humidity > humidityThreshold) {
+        // 这里可以添加湿度过高时的操作，例如打开风扇或其他设备
+      }
+      
+      // 火灾检测 - 火焰值大于阈值自动打开水泵
+      if (flameValue > flameThreshold) {
         // 打开水泵
         digitalWrite(PUMP_PIN, HIGH);
         pumpState = true;
@@ -340,8 +412,8 @@ void loop()
         }
       }
       
-      // 煤气泄漏检测 - MQ-2值大于50自动打开风扇（映射到0-100后的新阈值）
-      if (mq2Value > 50) {
+      // 煤气泄漏检测 - MQ-2值大于阈值自动打开风扇
+      if (mq2Value > smokeThreshold) {
         // 打开风扇
         digitalWrite(FAN_PIN, HIGH);
         fanState = true;
@@ -383,6 +455,16 @@ void loop()
     if (deletingFinger) {
       deleteFinger();
     }
+  }
+  
+  // MQTT连接维护
+  if (wifiConnected && !mqttClient.connected()) {
+    connectToOneNET();
+  }
+  
+  // 处理MQTT消息
+  if (mqttClient.connected()) {
+    mqttClient.loop();
   }
   
   // 短暂延迟，减少CPU占用但保持按键灵敏度
@@ -856,9 +938,208 @@ void confirmFingerOperation() {
 }
 
 //----------------------------------------
+// 连接OneNET平台
+//----------------------------------------
+void connectToOneNET() {
+  if (!wifiConnected) return;  // 如果WiFi未连接，不尝试连接OneNET
+  
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setCursor(0, 35);
+  u8g2.print("连接OneNET中...");
+  u8g2.sendBuffer();
+  
+  // 尝试连接OneNET，重试5次
+  int retryCount = 0;
+  while (!mqttClient.connected() && retryCount < 5) {
+    Serial.println("连接OneNET MQTT服务器...");
+    
+    if (mqttClient.connect(device_id, product_id, token)) {
+      Serial.println("成功连接到OneNET!");
+      
+      // 成功连接后订阅主题
+      mqttClient.subscribe(ONENET_TOPIC_PROP_SET);
+      mqttClient.subscribe(ONENET_TOPIC_PROP_POST_REPLY);
+      
+      u8g2.clearBuffer();
+      u8g2.setCursor(0, 35);
+      u8g2.print("OneNET连接成功");
+      u8g2.sendBuffer();
+      delay(1000);
+      
+      break;
+    } else {
+      retryCount++;
+      Serial.print("连接失败，错误码：");
+      Serial.println(mqttClient.state());
+      Serial.println("2秒后重试...");
+      delay(2000);
+    }
+  }
+  
+  if (!mqttClient.connected()) {
+    u8g2.clearBuffer();
+    u8g2.setCursor(0, 35);
+    u8g2.print("OneNET连接失败");
+    u8g2.sendBuffer();
+    delay(1000);
+  }
+}
+
+//----------------------------------------
+// MQTT回调函数-处理收到的消息
+//----------------------------------------
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("收到消息 [");
+  Serial.print(topic);
+  Serial.print("] ");
+  
+  char message[length + 1];
+  for (unsigned int i = 0; i < length; i++) {
+    message[i] = (char)payload[i];
+    Serial.print((char)payload[i]);
+  }
+  message[length] = '\0';
+  Serial.println();
+  
+  // 处理属性设置请求
+  if (strcmp(topic, ONENET_TOPIC_PROP_SET) == 0) {
+    DynamicJsonDocument doc(256);
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (error) {
+      Serial.print("解析JSON失败: ");
+      Serial.println(error.c_str());
+      return;
+    }
+    
+    // 提取消息ID和参数
+    String msgId = doc["id"];
+    JsonObject params = doc["params"];
+    
+    // 处理收到的属性设置
+    if (params.containsKey("light")) {
+      lightState = params["light"];
+      digitalWrite(LIGHT_PIN, lightState ? HIGH : LOW);
+      Serial.print("设置灯光状态: ");
+      Serial.println(lightState);
+    }
+    
+    if (params.containsKey("fan")) {
+      fanState = params["fan"];
+      fanManualControl = true;
+      digitalWrite(FAN_PIN, fanState ? HIGH : LOW);
+      Serial.print("设置风扇状态: ");
+      Serial.println(fanState);
+    }
+    
+    if (params.containsKey("pump")) {
+      pumpState = params["pump"];
+      pumpManualControl = true;
+      digitalWrite(PUMP_PIN, pumpState ? HIGH : LOW);
+      Serial.print("设置水泵状态: ");
+      Serial.println(pumpState);
+    }
+    
+    // 处理阈值设置
+    if (params.containsKey("temperatureThreshold")) {
+      temperatureThreshold = params["temperatureThreshold"];
+      Serial.print("设置温度阈值: ");
+      Serial.println(temperatureThreshold);
+    }
+    
+    if (params.containsKey("humidityThreshold")) {
+      humidityThreshold = params["humidityThreshold"];
+      Serial.print("设置湿度阈值: ");
+      Serial.println(humidityThreshold);
+    }
+    
+    if (params.containsKey("lightThreshold")) {
+      lightThreshold = params["lightThreshold"];
+      Serial.print("设置亮度阈值: ");
+      Serial.println(lightThreshold);
+    }
+    
+    if (params.containsKey("decibelThreshold")) {
+      decibelThreshold = params["decibelThreshold"];
+      Serial.print("设置分贝阈值: ");
+      Serial.println(decibelThreshold);
+    }
+    
+    if (params.containsKey("flameThreshold")) {
+      flameThreshold = params["flameThreshold"];
+      Serial.print("设置火焰阈值: ");
+      Serial.println(flameThreshold);
+    }
+    
+    if (params.containsKey("smokeThreshold")) {
+      smokeThreshold = params["smokeThreshold"];
+      Serial.print("设置烟雾阈值: ");
+      Serial.println(smokeThreshold);
+    }
+    
+    // 发送属性设置响应
+    char responseBuf[100];
+    sprintf(responseBuf, "{\"id\":\"%s\",\"code\":200,\"msg\":\"success\"}", msgId.c_str());
+    mqttClient.publish(ONENET_TOPIC_PROP_SET_REPLY, responseBuf);
+    Serial.println("已发送设置响应");
+  }
+}
+
+//----------------------------------------
+// 发布传感器数据到OneNET
+//----------------------------------------
+void publishSensorData() {
+  if (!wifiConnected || !mqttClient.connected()) return;
+  
+  // 读取传感器数据
+  float temperature = 0, humidity = 0, lux = 0;
+  int flameValue = 0, mq2Value = 0, dB = 0;
+  readSensors(temperature, humidity, lux, flameValue, mq2Value, dB);
+  
+  // 检查DHT11数据是否有效
+  if (isnan(humidity) || isnan(temperature)) {
+    Serial.println("DHT11数据无效，跳过本次上报");
+    return;
+  }
+  
+  // 创建JSON数据
+  char params[256];
+  char jsonBuf[512];
+  
+  // 构建参数JSON，移除阈值相关参数
+  sprintf(params, "{"
+    "\"temperature\":{\"value\":%.1f},"
+    "\"humidity\":{\"value\":%.1f},"
+    "\"light\":{\"value\":%.1f},"
+    "\"flame\":{\"value\":%d},"
+    "\"gas\":{\"value\":%d},"
+    "\"noise\":{\"value\":%d},"
+    "\"lightState\":{\"value\":%s},"
+    "\"fanState\":{\"value\":%s},"
+    "\"pumpState\":{\"value\":%s}"
+    "}",
+    temperature, humidity, lux, 
+    flameValue, mq2Value, dB,
+    lightState ? "true" : "false",
+    fanState ? "true" : "false",
+    pumpState ? "true" : "false"
+  );
+  
+  // 构建完整的JSON消息
+  sprintf(jsonBuf, ONENET_TOPIC_PROP_FORMAT, postMsgId++, params);
+  
+  // 发布到OneNET
+  if (mqttClient.publish(ONENET_TOPIC_PROP_POST, jsonBuf)) {
+    Serial.println("传感器数据上报成功");
+  } else {
+    Serial.println("传感器数据上报失败");
+  }
+}
+
+//----------------------------------------
 // WiFi相关函数实现
 //----------------------------------------
-
 /**
  * 连接WiFi网络
  */
@@ -894,6 +1175,9 @@ void connectToWiFi() {
     u8g2.print(WiFi.localIP().toString().c_str());
     u8g2.sendBuffer();
     delay(2000);
+    
+    // WiFi连接成功后，连接OneNET
+    connectToOneNET();
   } else {
     wifiConnected = false;
     
@@ -926,6 +1210,16 @@ void checkWiFiStatus() {
       WiFi.disconnect();
       delay(1000);
       WiFi.begin(ssid, password);
+    }
+  }
+  
+  // 如果WiFi连接状态发生变化，更新MQTT连接
+  static bool lastWifiState = false;
+  if (wifiConnected != lastWifiState) {
+    lastWifiState = wifiConnected;
+    
+    if (wifiConnected) {
+      connectToOneNET();
     }
   }
 }
