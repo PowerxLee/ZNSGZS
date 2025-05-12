@@ -34,25 +34,27 @@
 #define KEY2 38             // 按键引脚
 #define KEY3 39             // 按键3引脚
 //----------------------------------------
-// OneNET MQTT 配置
+// 阿里云MQTT配置
 //----------------------------------------
-#define product_id "b06TB0vsAb" // 改为自己的产品ID
-#define device_id "ZNSGZS"  // 改为自己的设备ID
-#define token "version=2018-10-31&res=products%2Fb06TB0vsAb%2Fdevices%2FZNSGZS&et=1904453080&method=md5&sign=gPCS6cVaOsl9Azswy57DBA%3D%3D"       // 改为自己的token
+#define PRODUCT_KEY       "a1kyhW4QQ1t"       // 替换为你的阿里云PRODUCT_KEY
+#define DEVICE_NAME       "ZNSGZS"            // 替换为你的阿里云DEVICE_NAME
+#define DEVICE_SECRET     "c15db7d20d58754ca996b7d2352a583d" // 替换为你的阿里云DEVICE_SECRET
+#define REGION_ID         "cn-shanghai"
 
-const char* mqtt_server = "mqtts.heclouds.com"; // MQTT服务器地址
-const int mqtt_port = 1883; // MQTT服务器端口
+/* 线上环境域名和端口号 */
+#define MQTT_SERVER       PRODUCT_KEY".iot-as-mqtt."REGION_ID ".aliyuncs.com"
+#define MQTT_PORT         1883
+#define MQTT_USRNAME      DEVICE_NAME"&"PRODUCT_KEY
 
-#define ONENET_TOPIC_PROP_POST "$sys/" product_id "/" device_id "/thing/property/post"
-// 设备属性上报请求,设备---->OneNET
-#define ONENET_TOPIC_PROP_SET "$sys/" product_id "/" device_id "/thing/property/set"
-// 设备属性设置请求,OneNET---->设备
-#define ONENET_TOPIC_PROP_POST_REPLY "$sys/" product_id "/" device_id "/thing/property/post/reply"
-// 设备属性上报响应,OneNET---->设备
-#define ONENET_TOPIC_PROP_SET_REPLY "$sys/" product_id "/" device_id "/thing/property/set_reply"
-// 设备属性设置响应,设备---->OneNET
-#define ONENET_TOPIC_PROP_FORMAT "{\"id\":\"%u\",\"version\":\"1.0\",\"params\":%s}"
-// 设备属性格式模板
+// 这里需要根据阿里云生成的三元组信息修改
+#define CLIENT_ID         "a1kyhW4QQ1t.ZNSGZS|securemode=2,signmethod=hmacsha256,timestamp=1747019835103|"
+#define MQTT_PASSWD       "ae0dbce0965f1974fafd10eb9da3834db870f6d1d2ca27d19ba08ca502224942" // 根据阿里云规则生成的密码
+
+// 阿里云主题定义
+#define ALI_TOPIC_PROP_POST     "/sys/" PRODUCT_KEY "/" DEVICE_NAME "/thing/event/property/post"
+#define ALI_TOPIC_PROP_SET      "/sys/" PRODUCT_KEY "/" DEVICE_NAME "/thing/service/property/set"
+#define ALI_TOPIC_PROP_POST_REPLY "/sys/" PRODUCT_KEY "/" DEVICE_NAME "/thing/event/property/post_reply"
+#define ALI_TOPIC_PROP_FORMAT   "{\"id\":\"%u\",\"version\":\"1.0\",\"method\":\"thing.event.property.post\",\"params\":%s}"
 
 //----------------------------------------
 // 全局对象初始化
@@ -113,7 +115,7 @@ bool pumpManualControl = false; // 水泵手动控制标志
 
 // 报警状态管理
 bool fireAlarmActive = false;     // 火灾报警状态
-bool gasAlarmActive = false;      // 煤气报警状态
+bool smokeAlarmActive = false;      // 烟雾报警状态
 
 // 蜂鸣器报警状态管理
 bool buzzerActive = false;         // 蜂鸣器激活状态
@@ -196,7 +198,7 @@ void connectToWiFi();                   // 连接WiFi
 void checkWiFiStatus();                 // 检查WiFi状态
 
 // MQTT相关函数
-void connectToOneNET();
+void connectToAliyun();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void publishSensorData();
 
@@ -205,7 +207,7 @@ void publishSensorData();
 //----------------------------------------
 void handleBuzzer() {
   // 如果存在报警事件，激活蜂鸣器
-  if (fireAlarmActive || gasAlarmActive) {
+  if (fireAlarmActive || smokeAlarmActive) {
     buzzerActive = true;
   } else {
     // 如果所有报警解除，停止蜂鸣器
@@ -299,12 +301,12 @@ void setup()
   connectToWiFi();
   
   // 初始化MQTT客户端
-  mqttClient.setServer(mqtt_server, mqtt_port);
+  mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
   
   // 连接WiFi后连接OneNET
   if (wifiConnected) {
-    connectToOneNET();
+    connectToAliyun();
     // 设置10秒定时上报数据
     mqttTicker.attach(1, publishSensorData);
   }
@@ -411,17 +413,17 @@ void loop()
         }
       }
       
-      // 煤气泄漏检测 - MQ-2值大于阈值自动打开风扇
+      // 烟雾泄漏检测 - MQ-2值大于阈值自动打开风扇
       if (mq2Value > smokeThreshold) {
         // 打开风扇
         digitalWrite(FAN_PIN, HIGH);
         fanState = true;
         fanManualControl = false; // 自动控制模式
-        // 设置煤气泄漏报警状态
-        gasAlarmActive = true;
+        // 设置烟雾泄漏报警状态
+        smokeAlarmActive = true;
       } else {
-        // 煤气泄漏解除
-        gasAlarmActive = false;
+        // 烟雾泄漏解除
+        smokeAlarmActive = false;
         // 只有在非手动控制模式下才自动关闭风扇
         if (!fanManualControl) {
           digitalWrite(FAN_PIN, LOW);
@@ -458,7 +460,7 @@ void loop()
   
   // MQTT连接维护
   if (wifiConnected && !mqttClient.connected()) {
-    connectToOneNET();
+    connectToAliyun();
   }
   
   // 处理MQTT消息
@@ -937,32 +939,32 @@ void confirmFingerOperation() {
 }
 
 //----------------------------------------
-// 连接OneNET平台
+// 连接阿里云物联网平台
 //----------------------------------------
-void connectToOneNET() {
-  if (!wifiConnected) return;  // 如果WiFi未连接，不尝试连接OneNET
+void connectToAliyun() {
+  if (!wifiConnected) return;  // 如果WiFi未连接，不尝试连接阿里云
   
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_wqy16_t_gb2312);
   u8g2.setCursor(0, 35);
-  u8g2.print("连接OneNET中...");
+  u8g2.print("连接阿里云中...");
   u8g2.sendBuffer();
   
-  // 尝试连接OneNET，重试5次
+  // 尝试连接阿里云，重试5次
   int retryCount = 0;
   while (!mqttClient.connected() && retryCount < 5) {
-    Serial.println("连接OneNET MQTT服务器...");
+    Serial.println("连接阿里云MQTT服务器...");
     
-    if (mqttClient.connect(device_id, product_id, token)) {
-      Serial.println("成功连接到OneNET!");
+    if (mqttClient.connect(CLIENT_ID, MQTT_USRNAME, MQTT_PASSWD)) {
+      Serial.println("成功连接到阿里云!");
       
       // 成功连接后订阅主题
-      mqttClient.subscribe(ONENET_TOPIC_PROP_SET);
-      mqttClient.subscribe(ONENET_TOPIC_PROP_POST_REPLY);
+      mqttClient.subscribe(ALI_TOPIC_PROP_SET);
+      mqttClient.subscribe(ALI_TOPIC_PROP_POST_REPLY);
       
       u8g2.clearBuffer();
       u8g2.setCursor(0, 35);
-      u8g2.print("OneNET连接成功");
+      u8g2.print("阿里云连接成功");
       u8g2.sendBuffer();
       delay(1000);
       
@@ -979,7 +981,7 @@ void connectToOneNET() {
   if (!mqttClient.connected()) {
     u8g2.clearBuffer();
     u8g2.setCursor(0, 35);
-    u8g2.print("OneNET连接失败");
+    u8g2.print("阿里云连接失败");
     u8g2.sendBuffer();
     delay(1000);
   }
@@ -1001,8 +1003,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   message[length] = '\0';
   Serial.println();
   
-  // 处理属性设置请求
-  if (strcmp(topic, ONENET_TOPIC_PROP_SET) == 0) {
+  // 处理属性设置请求 - 阿里云平台
+  if (strcmp(topic, ALI_TOPIC_PROP_SET) == 0) {
     DynamicJsonDocument doc(256);
     DeserializationError error = deserializeJson(doc, message);
     
@@ -1012,81 +1014,85 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       return;
     }
     
-    // 提取消息ID和参数
+    // 提取消息ID
     String msgId = doc["id"];
-    JsonObject params = doc["params"];
     
-    // 处理收到的属性设置
-    if (params.containsKey("light")) {
-      lightState = params["light"];
-      digitalWrite(LIGHT_PIN, lightState ? HIGH : LOW);
-      Serial.print("设置灯光状态: ");
-      Serial.println(lightState);
+    // 阿里云平台参数格式
+    if (doc.containsKey("params")) {
+      JsonObject params = doc["params"];
+      
+      // 处理收到的属性设置
+      if (params.containsKey("light")) {
+        lightState = (int)params["light"] == 1;
+        digitalWrite(LIGHT_PIN, lightState ? HIGH : LOW);
+        Serial.print("设置灯光状态: ");
+        Serial.println(lightState);
+      }
+      
+      if (params.containsKey("fan")) {
+        fanState = (int)params["fan"] == 1;
+        fanManualControl = true;
+        digitalWrite(FAN_PIN, fanState ? HIGH : LOW);
+        Serial.print("设置风扇状态: ");
+        Serial.println(fanState);
+      }
+      
+      if (params.containsKey("pump")) {
+        pumpState = (int)params["pump"] == 1;
+        pumpManualControl = true;
+        digitalWrite(PUMP_PIN, pumpState ? HIGH : LOW);
+        Serial.print("设置水泵状态: ");
+        Serial.println(pumpState);
+      }
+      
+      // 处理阈值设置
+      if (params.containsKey("temperatureThreshold")) {
+        temperatureThreshold = params["temperatureThreshold"];
+        Serial.print("设置温度阈值: ");
+        Serial.println(temperatureThreshold);
+      }
+      
+      if (params.containsKey("humidityThreshold")) {
+        humidityThreshold = params["humidityThreshold"];
+        Serial.print("设置湿度阈值: ");
+        Serial.println(humidityThreshold);
+      }
+      
+      if (params.containsKey("lightThreshold")) {
+        lightThreshold = params["lightThreshold"];
+        Serial.print("设置亮度阈值: ");
+        Serial.println(lightThreshold);
+      }
+      
+      if (params.containsKey("decibelThreshold")) {
+        decibelThreshold = params["decibelThreshold"];
+        Serial.print("设置分贝阈值: ");
+        Serial.println(decibelThreshold);
+      }
+      
+      if (params.containsKey("flameThreshold")) {
+        flameThreshold = params["flameThreshold"];
+        Serial.print("设置火焰阈值: ");
+        Serial.println(flameThreshold);
+      }
+      
+      if (params.containsKey("smokeThreshold")) {
+        smokeThreshold = params["smokeThreshold"];
+        Serial.print("设置烟雾阈值: ");
+        Serial.println(smokeThreshold);
+      }
+      
+      // 发送属性设置响应
+      char responseBuf[100];
+      sprintf(responseBuf, "{\"id\":\"%s\",\"code\":200,\"data\":{}}", msgId.c_str());
+      mqttClient.publish(ALI_TOPIC_PROP_POST_REPLY, responseBuf);
+      Serial.println("已发送设置响应");
     }
-    
-    if (params.containsKey("fan")) {
-      fanState = params["fan"];
-      fanManualControl = true;
-      digitalWrite(FAN_PIN, fanState ? HIGH : LOW);
-      Serial.print("设置风扇状态: ");
-      Serial.println(fanState);
-    }
-    
-    if (params.containsKey("pump")) {
-      pumpState = params["pump"];
-      pumpManualControl = true;
-      digitalWrite(PUMP_PIN, pumpState ? HIGH : LOW);
-      Serial.print("设置水泵状态: ");
-      Serial.println(pumpState);
-    }
-    
-    // 处理阈值设置
-    if (params.containsKey("temperatureThreshold")) {
-      temperatureThreshold = params["temperatureThreshold"];
-      Serial.print("设置温度阈值: ");
-      Serial.println(temperatureThreshold);
-    }
-    
-    if (params.containsKey("humidityThreshold")) {
-      humidityThreshold = params["humidityThreshold"];
-      Serial.print("设置湿度阈值: ");
-      Serial.println(humidityThreshold);
-    }
-    
-    if (params.containsKey("lightThreshold")) {
-      lightThreshold = params["lightThreshold"];
-      Serial.print("设置亮度阈值: ");
-      Serial.println(lightThreshold);
-    }
-    
-    if (params.containsKey("decibelThreshold")) {
-      decibelThreshold = params["decibelThreshold"];
-      Serial.print("设置分贝阈值: ");
-      Serial.println(decibelThreshold);
-    }
-    
-    if (params.containsKey("flameThreshold")) {
-      flameThreshold = params["flameThreshold"];
-      Serial.print("设置火焰阈值: ");
-      Serial.println(flameThreshold);
-    }
-    
-    if (params.containsKey("smokeThreshold")) {
-      smokeThreshold = params["smokeThreshold"];
-      Serial.print("设置烟雾阈值: ");
-      Serial.println(smokeThreshold);
-    }
-    
-    // 发送属性设置响应
-    char responseBuf[100];
-    sprintf(responseBuf, "{\"id\":\"%s\",\"code\":200,\"msg\":\"success\"}", msgId.c_str());
-    mqttClient.publish(ONENET_TOPIC_PROP_SET_REPLY, responseBuf);
-    Serial.println("已发送设置响应");
   }
 }
 
 //----------------------------------------
-// 发布传感器数据到OneNET
+// 发布传感器数据到阿里云
 //----------------------------------------
 void publishSensorData() {
   if (!wifiConnected || !mqttClient.connected()) return;
@@ -1103,33 +1109,41 @@ void publishSensorData() {
   }
   
   // 创建JSON数据
-  char params[256];
-  char jsonBuf[512];
+  char params[350]; // 增加缓冲区大小以适应更多数据
+  char jsonBuf[600]; // 增加缓冲区大小以适应更多数据
   
-  // 构建参数JSON，移除阈值相关参数
+  // 构建参数JSON，阿里云格式，添加阈值数据
   sprintf(params, "{"
-    "\"temperature\":{\"value\":%.1f},"
-    "\"humidity\":{\"value\":%.1f},"
-    "\"light\":{\"value\":%.1f},"
-    "\"flame\":{\"value\":%d},"
-    "\"gas\":{\"value\":%d},"
-    "\"noise\":{\"value\":%d},"
-    "\"lightState\":{\"value\":%s},"
-    "\"fanState\":{\"value\":%s},"
-    "\"pumpState\":{\"value\":%s}"
+    "\"temperature\":%.1f,"
+    "\"humidity\":%.1f,"
+    "\"light\":%.1f,"
+    "\"flame\":%d,"
+    "\"smoke\":%d,"
+    "\"noise\":%d,"
+    "\"lightState\":%s,"
+    "\"fanState\":%s,"
+    "\"pumpState\":%s,"
+    "\"temperatureThreshold\":%.1f,"
+    "\"humidityThreshold\":%.1f,"
+    "\"lightThreshold\":%.1f,"
+    "\"flameThreshold\":%d,"
+    "\"smokeThreshold\":%d,"
+    "\"decibelThreshold\":%d"
     "}",
     temperature, humidity, lux, 
     flameValue, mq2Value, dB,
-    lightState ? "true" : "false",
-    fanState ? "true" : "false",
-    pumpState ? "true" : "false"
+    lightState ? "1" : "0",
+    fanState ? "1" : "0",
+    pumpState ? "1" : "0",
+    temperatureThreshold, humidityThreshold, lightThreshold,
+    flameThreshold, smokeThreshold, decibelThreshold
   );
   
   // 构建完整的JSON消息
-  sprintf(jsonBuf, ONENET_TOPIC_PROP_FORMAT, postMsgId++, params);
+  sprintf(jsonBuf, ALI_TOPIC_PROP_FORMAT, postMsgId++, params);
   
-  // 发布到OneNET
-  if (mqttClient.publish(ONENET_TOPIC_PROP_POST, jsonBuf)) {
+  // 发布到阿里云
+  if (mqttClient.publish(ALI_TOPIC_PROP_POST, jsonBuf)) {
     Serial.println("传感器数据上报成功");
   } else {
     Serial.println("传感器数据上报失败");
@@ -1176,7 +1190,7 @@ void connectToWiFi() {
     delay(2000);
     
     // WiFi连接成功后，连接OneNET
-    connectToOneNET();
+    connectToAliyun();
   } else {
     wifiConnected = false;
     
@@ -1218,7 +1232,7 @@ void checkWiFiStatus() {
     lastWifiState = wifiConnected;
     
     if (wifiConnected) {
-      connectToOneNET();
+      connectToAliyun();
     }
   }
 }
