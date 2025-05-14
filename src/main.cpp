@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <U8g2lib.h>  // OLED显示屏库
 #include <DHT.h>      // DHT11温湿度传感器库
-#include <DHT_U.h>    // DHT11扩展库
 #include <Wire.h>     // I2C通信库
 #include <BH1750.h>   // BH1750光照传感器库
 #include <OneButton.h> // 按键处理库
@@ -238,11 +237,8 @@ void handleBuzzer() {
     
     // 检查是否需要切换蜂鸣器状态
     if (currentTime - lastBuzzerToggleTime >= buzzerToggleInterval) {
-      // 切换蜂鸣器状态 (高/低)
       buzzerState = !buzzerState;
-      // 更新蜂鸣器输出（注意是高电平触发）
       digitalWrite(BUZZER_PIN, buzzerState ? HIGH : LOW);
-      // 更新上次切换时间
       lastBuzzerToggleTime = currentTime;
     }
   }
@@ -303,12 +299,12 @@ void setup()
   button3.setPressTicks(1500);
   
   // 增加按键灵敏度设置
-  button1.setClickTicks(50);  // 减少点击判定时间为50ms（默认是400ms）
+  button1.setClickTicks(50);  // 减少点击判定时间为50ms
   button2.setClickTicks(50);  // 减少点击判定时间
   button3.setClickTicks(200);  // 设置较长的点击判定时间，以便更容易区分双击
   
   // 设置防抖动时间
-  button1.setDebounceTicks(10); // 减少防抖时间为10ms（默认是50ms）
+  button1.setDebounceTicks(10); // 减少防抖时间为10ms
   button2.setDebounceTicks(10); // 减少防抖时间
   button3.setDebounceTicks(20); // 增加防抖时间以提高双击检测稳定性
   
@@ -345,12 +341,8 @@ void loop()
   button2.tick();
   button3.tick();
   
-  // 检测指纹模块检测引脚状态，控制指纹模块启动引脚输出
-  if (digitalRead(ZW_IRQ) == HIGH) {
-    digitalWrite(ZW_CTRL, HIGH);
-  } else {
-    digitalWrite(ZW_CTRL, HIGH);
-  }
+  // 指纹模块始终保持启动状态
+  digitalWrite(ZW_CTRL, HIGH);
   
   // 检查WiFi状态（定期检查）
   if (currentTime - lastWiFiCheckTime >= wifiCheckInterval) {
@@ -504,20 +496,14 @@ void loop()
 //----------------------------------------
 void readSensors(float &temperature, float &humidity, float &lux, int &flameValue, int &mq2Value, int &dB)
 {
-  // 读取火焰传感器的模拟值
-  int rawFlameValue = 4095 - analogRead(FLAME_SENSOR_PIN);
-  // 映射火焰传感器值到0-100范围
-  flameValue = map(rawFlameValue, 0, 4095, 0, 100);
+  // 读取火焰传感器的模拟值并映射到0-100范围
+  flameValue = map(4095 - analogRead(FLAME_SENSOR_PIN), 0, 4095, 0, 100);
   
-  // 读取MQ-2传感器的模拟值
-  int rawMq2Value = analogRead(MQ2_SENSOR_PIN);
-  // 映射MQ-2传感器值到0-100范围
-  mq2Value = map(rawMq2Value, 0, 4095, 0, 100);
+  // 读取MQ-2传感器的模拟值并映射到0-100范围
+  mq2Value = map(analogRead(MQ2_SENSOR_PIN), 0, 4095, 0, 100);
   
-  // 读取max4466语音传感器
-  int rawDbValue = analogRead(VOICE);
-  // 映射语音传感器值到0-100范围
-  dB = map(rawDbValue, 0, 4095, 0, 100);
+  // 读取max4466语音传感器并映射到0-100范围
+  dB = map(analogRead(VOICE), 0, 4095, 0, 100);
 
   // 读取DHT11的温湿度数据
   humidity = dht.readHumidity();       // 读取湿度
@@ -565,56 +551,40 @@ void togglePump() {
 // 切换页面和模式回调函数
 //----------------------------------------
 void switchPage() {
-  // 修改逻辑：在三个页面间循环切换（去掉WiFi页面）
+  // 修改逻辑：在三个页面间循环切换
   if (currentPage == 0) {
     // 从主页面切换到添加指纹页面
     currentPage = 1;
-    
-    // 重置指纹相关状态
     fingerOption = 0; // 设置为添加模式
     fingerId = 1;     // 重置指纹ID为1
-    
-    // 切换页面时显示提示信息
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-    u8g2.setCursor(0, 35);
-    u8g2.print("切换到添加指纹");
-    u8g2.sendBuffer();
-    delay(1000); // 显示1秒切换提示
   } else if (currentPage == 1) {
     // 从添加指纹页面切换到删除指纹页面
     currentPage = 2;
-    
-    // 设置为删除模式
-    fingerOption = 1;
+    fingerOption = 1; // 设置为删除模式
     fingerId = 1;     // 重置指纹ID为1
-    
-    // 切换页面时显示提示信息
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-    u8g2.setCursor(0, 35);
-    u8g2.print("切换到删除指纹");
-    u8g2.sendBuffer();
-    delay(1000); // 显示1秒切换提示
   } else {
     // 从删除指纹页面返回主页面
     currentPage = 0;
-    
-    // 重置指纹相关状态
     fingerOption = 0; // 重置指纹选项
     fingerId = 1;     // 重置指纹ID为1
     enrollingFinger = false; // 取消任何正在进行的指纹操作
     deletingFinger = false;
     showFeedback = false;    // 取消任何反馈显示
-    
-    // 切换页面时显示提示信息
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-    u8g2.setCursor(0, 35);
-    u8g2.print("切换到主页面");
-    u8g2.sendBuffer();
-    delay(1000); // 显示1秒切换提示
   }
+  
+  // 显示切换提示
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2.setCursor(0, 35);
+  if (currentPage == 0) {
+    u8g2.print("切换到主页面");
+  } else if (currentPage == 1) {
+    u8g2.print("切换到添加指纹");
+  } else {
+    u8g2.print("切换到删除指纹");
+  }
+  u8g2.sendBuffer();
+  delay(1000); // 显示1秒切换提示
 }
 
 //----------------------------------------
@@ -869,8 +839,12 @@ uint8_t PS_AutoEnroll(uint16_t PageID)
 {
   PS_AutoEnrollBuffer[10] = (PageID>>8);
   PS_AutoEnrollBuffer[11] = (PageID);
-  PS_AutoEnrollBuffer[15] = (0x54+PS_AutoEnrollBuffer[10]+PS_AutoEnrollBuffer[11])>>8;
-  PS_AutoEnrollBuffer[16] = (0x54+PS_AutoEnrollBuffer[10]+PS_AutoEnrollBuffer[11]);
+  
+  // 计算校验和
+  uint16_t sum = 0x54 + PS_AutoEnrollBuffer[10] + PS_AutoEnrollBuffer[11];
+  PS_AutoEnrollBuffer[15] = sum >> 8;
+  PS_AutoEnrollBuffer[16] = sum & 0xFF;
+  
   FPM383C_SendData(17, PS_AutoEnrollBuffer);
   FPM383C_ReceiveData(10000);
   return PS_ReceiveBuffer[6] == 0x07 ? PS_ReceiveBuffer[9] : 0xFF;
@@ -883,8 +857,12 @@ uint8_t PS_Delete(uint16_t PageID)
 {
   PS_DeleteBuffer[10] = (PageID>>8);
   PS_DeleteBuffer[11] = (PageID);
-  PS_DeleteBuffer[14] = (0x15+PS_DeleteBuffer[10]+PS_DeleteBuffer[11])>>8;
-  PS_DeleteBuffer[15] = (0x15+PS_DeleteBuffer[10]+PS_DeleteBuffer[11]);
+  
+  // 计算校验和
+  uint16_t sum = 0x15 + PS_DeleteBuffer[10] + PS_DeleteBuffer[11];
+  PS_DeleteBuffer[14] = sum >> 8;
+  PS_DeleteBuffer[15] = sum & 0xFF;
+  
   FPM383C_SendData(16, PS_DeleteBuffer);
   FPM383C_ReceiveData(2000);
   return PS_ReceiveBuffer[6] == 0x07 ? PS_ReceiveBuffer[9] : 0xFF;
@@ -936,7 +914,7 @@ void nextFingerId() {
 // 切换上一个指纹ID回调函数
 //----------------------------------------
 void previousFingerId() {
-  // 仅在指纹管理页面生效
+  // 仅在指纹管理页面生效，且未执行操作时
   if ((currentPage == 1 || currentPage == 2) && !enrollingFinger && !deletingFinger) {
     // 切换到上一个ID，循环切换
     fingerId = (fingerId > 1) ? (fingerId - 1) : MAX_FINGER_ID;
@@ -947,21 +925,16 @@ void previousFingerId() {
 // 确认指纹操作回调函数
 //----------------------------------------
 void confirmFingerOperation() {
-  // 仅在指纹管理页面生效
+  // 仅在指纹管理页面生效，且未执行操作时
   if ((currentPage == 1 || currentPage == 2) && !enrollingFinger && !deletingFinger) {
+    // 设置操作状态并记录开始时间
     if (currentPage == 1) {
-      // 在添加指纹页面，开始添加指纹
-      enrollingFinger = true;
-      fingerOpStartTime = millis();
-      // 更新页面提示正在处理
-      displayFingerPage();
-    } else if (currentPage == 2) {
-      // 在删除指纹页面，开始删除指纹
-      deletingFinger = true;
-      fingerOpStartTime = millis();
-      // 更新页面提示正在处理
-      displayFingerPage();
+      enrollingFinger = true; // 添加指纹
+    } else {
+      deletingFinger = true;  // 删除指纹
     }
+    fingerOpStartTime = millis();
+    displayFingerPage(); // 更新页面提示正在处理
   }
 }
 
@@ -1000,7 +973,6 @@ void connectToAliyun() {
       retryCount++;
       Serial.print("连接失败，错误码：");
       Serial.println(mqttClient.state());
-      Serial.println("3秒后重试...");
       delay(3000);
     }
   }
@@ -1022,6 +994,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print(topic);
   Serial.print("] ");
   
+  // 将payload转换为字符串
   char message[length + 1];
   for (unsigned int i = 0; i < length; i++) {
     message[i] = (char)payload[i];
@@ -1043,118 +1016,89 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     
     // 提取消息ID
     String msgId = doc["id"];
+    JsonObject params = doc["params"];
     
-    // 阿里云平台参数格式
-    if (doc.containsKey("params")) {
-      JsonObject params = doc["params"];
+    // 处理查寝启动属性
+    if (params.containsKey("startCheckIn")) {
+      bool checkInFlag = (int)params["startCheckIn"] == 1;
       
-      // 处理查寝启动属性
-      if (params.containsKey("startCheckIn")) {
-        bool checkInFlag = (int)params["startCheckIn"] == 1;
+      // 只在属性从0变为1时触发查寝（避免重复触发）
+      if (checkInFlag && !lastCheckInFlag && !checkInModeActive) {
+        startCheckInMode();
         
-        // 只在属性从0变为1时触发查寝（避免重复触发）
-        if (checkInFlag && !lastCheckInFlag && !checkInModeActive) {
-          startCheckInMode();
-          
-          // 上报正在查寝状态
-          char statusBuffer[128];
-          sprintf(statusBuffer, "{\"id\":\"%u\",\"version\":\"1.0\",\"method\":\"thing.event.property.post\",\"params\":{\"absentUsers\":\"正在查寝，请稍等...\"}}", postMsgId++);
-          mqttClient.publish(ALI_TOPIC_PROP_POST, statusBuffer);
-        }
-        
-        // 更新上次状态
-        lastCheckInFlag = checkInFlag;
+        // 上报正在查寝状态
+        char statusBuffer[128];
+        sprintf(statusBuffer, "{\"id\":\"%u\",\"version\":\"1.0\",\"method\":\"thing.event.property.post\",\"params\":{\"absentUsers\":\"正在查寝，请稍等...\"}}", postMsgId++);
+        mqttClient.publish(ALI_TOPIC_PROP_POST, statusBuffer);
       }
-      
-      // 处理查寝重置属性
-      if (params.containsKey("resetCheckIn")) {
-        bool resetFlag = (int)params["resetCheckIn"] == 1;
-        
-        // 只在属性从0变为1时重置查寝状态
-        if (resetFlag && !lastResetCheckInFlag) {
-          // 重置查寝状态
-          checkInModeActive = false;
-          userCheckInStatus = 0;
-          
-          // 上报重置查寝状态
-          char statusBuffer[128];
-          sprintf(statusBuffer, "{\"id\":\"%u\",\"version\":\"1.0\",\"method\":\"thing.event.property.post\",\"params\":{\"absentUsers\":\"未开启查寝\",\"resetCheckIn\":0}}", postMsgId++);
-          mqttClient.publish(ALI_TOPIC_PROP_POST, statusBuffer);
-          
-          Serial.println("查寝状态已重置");
-        }
-        
-        // 更新上次状态
-        lastResetCheckInFlag = resetFlag;
-      }
-      
-      // 处理收到的属性设置
-      if (params.containsKey("lightState")) {
-        lightState = (int)params["lightState"] == 1;
-        digitalWrite(LIGHT_PIN, lightState ? HIGH : LOW);
-        Serial.print("设置灯光状态: ");
-        Serial.println(lightState);
-      }
-      
-      if (params.containsKey("fanState")) {
-        fanState = (int)params["fanState"] == 1;
-        fanManualControl = true; // 设为手动控制模式
-        digitalWrite(FAN_PIN, fanState ? HIGH : LOW);
-        Serial.print("设置风扇状态: ");
-        Serial.println(fanState);
-      }
-      
-      if (params.containsKey("pumpState")) {
-        pumpState = (int)params["pumpState"] == 1;
-        pumpManualControl = true; // 设为手动控制模式
-        digitalWrite(PUMP_PIN, pumpState ? HIGH : LOW);
-        Serial.print("设置水泵状态: ");
-        Serial.println(pumpState);
-      }
-      
-      // 处理阈值设置
-      if (params.containsKey("temperatureThreshold")) {
-        temperatureThreshold = params["temperatureThreshold"];
-        Serial.print("设置温度阈值: ");
-        Serial.println(temperatureThreshold);
-      }
-      
-      if (params.containsKey("humidityThreshold")) {
-        humidityThreshold = params["humidityThreshold"];
-        Serial.print("设置湿度阈值: ");
-        Serial.println(humidityThreshold);
-      }
-      
-      if (params.containsKey("lightThreshold")) {
-        lightThreshold = params["lightThreshold"];
-        Serial.print("设置亮度阈值: ");
-        Serial.println(lightThreshold);
-      }
-      
-      if (params.containsKey("decibelThreshold")) {
-        decibelThreshold = params["decibelThreshold"];
-        Serial.print("设置分贝阈值: ");
-        Serial.println(decibelThreshold);
-      }
-      
-      if (params.containsKey("flameThreshold")) {
-        flameThreshold = params["flameThreshold"];
-        Serial.print("设置火焰阈值: ");
-        Serial.println(flameThreshold);
-      }
-      
-      if (params.containsKey("smokeThreshold")) {
-        smokeThreshold = params["smokeThreshold"];
-        Serial.print("设置烟雾阈值: ");
-        Serial.println(smokeThreshold);
-      }
-      
-      // 发送属性设置响应
-      char responseBuf[100];
-      sprintf(responseBuf, "{\"id\":\"%s\",\"code\":200,\"data\":{}}", msgId.c_str());
-      mqttClient.publish(ALI_TOPIC_PROP_POST_REPLY, responseBuf);
-      Serial.println("已发送设置响应");
+      lastCheckInFlag = checkInFlag;
     }
+    
+    // 处理查寝重置属性
+    if (params.containsKey("resetCheckIn")) {
+      bool resetFlag = (int)params["resetCheckIn"] == 1;
+      
+      // 只在属性从0变为1时重置查寝状态
+      if (resetFlag && !lastResetCheckInFlag) {
+        // 重置查寝状态
+        checkInModeActive = false;
+        userCheckInStatus = 0;
+        
+        // 上报重置查寝状态
+        char statusBuffer[128];
+        sprintf(statusBuffer, "{\"id\":\"%u\",\"version\":\"1.0\",\"method\":\"thing.event.property.post\",\"params\":{\"absentUsers\":\"未开启查寝\",\"resetCheckIn\":0}}", postMsgId++);
+        mqttClient.publish(ALI_TOPIC_PROP_POST, statusBuffer);
+      }
+      lastResetCheckInFlag = resetFlag;
+    }
+    
+    // 处理设备控制
+    if (params.containsKey("lightState")) {
+      lightState = (int)params["lightState"] == 1;
+      digitalWrite(LIGHT_PIN, lightState ? HIGH : LOW);
+    }
+    
+    if (params.containsKey("fanState")) {
+      fanState = (int)params["fanState"] == 1;
+      fanManualControl = true; // 设为手动控制模式
+      digitalWrite(FAN_PIN, fanState ? HIGH : LOW);
+    }
+    
+    if (params.containsKey("pumpState")) {
+      pumpState = (int)params["pumpState"] == 1;
+      pumpManualControl = true; // 设为手动控制模式
+      digitalWrite(PUMP_PIN, pumpState ? HIGH : LOW);
+    }
+    
+    // 处理阈值设置
+    if (params.containsKey("temperatureThreshold")) {
+      temperatureThreshold = params["temperatureThreshold"];
+    }
+    
+    if (params.containsKey("humidityThreshold")) {
+      humidityThreshold = params["humidityThreshold"];
+    }
+    
+    if (params.containsKey("lightThreshold")) {
+      lightThreshold = params["lightThreshold"];
+    }
+    
+    if (params.containsKey("decibelThreshold")) {
+      decibelThreshold = params["decibelThreshold"];
+    }
+    
+    if (params.containsKey("flameThreshold")) {
+      flameThreshold = params["flameThreshold"];
+    }
+    
+    if (params.containsKey("smokeThreshold")) {
+      smokeThreshold = params["smokeThreshold"];
+    }
+    
+    // 发送属性设置响应
+    char responseBuf[100];
+    sprintf(responseBuf, "{\"id\":\"%s\",\"code\":200,\"data\":{}}", msgId.c_str());
+    mqttClient.publish(ALI_TOPIC_PROP_POST_REPLY, responseBuf);
   }
 }
 
@@ -1175,11 +1119,8 @@ void publishSensorData() {
     return;
   }
   
-  // 创建JSON数据
-  char params[350]; // 增加缓冲区大小以适应更多数据
-  char jsonBuf[600]; // 增加缓冲区大小以适应更多数据
-  
-  // 构建参数JSON，阿里云格式，添加阈值数据
+  // 构建阿里云格式JSON
+  char params[350];
   sprintf(params, "{"
     "\"temperature\":%.1f,"
     "\"humidity\":%.1f,"
@@ -1207,14 +1148,11 @@ void publishSensorData() {
   );
   
   // 构建完整的JSON消息
+  char jsonBuf[600];
   sprintf(jsonBuf, ALI_TOPIC_PROP_FORMAT, postMsgId++, params);
   
   // 发布到阿里云
-  if (mqttClient.publish(ALI_TOPIC_PROP_POST, jsonBuf)) {
-    Serial.println("传感器数据上报成功");
-  } else {
-    Serial.println("传感器数据上报失败");
-  }
+  mqttClient.publish(ALI_TOPIC_PROP_POST, jsonBuf);
 }
 
 //----------------------------------------
@@ -1256,7 +1194,7 @@ void connectToWiFi() {
     u8g2.sendBuffer();
     delay(2000);
     
-    // WiFi连接成功后，连接OneNET
+    // WiFi连接成功后，连接阿里云
     connectToAliyun();
   } else {
     wifiConnected = false;
@@ -1284,23 +1222,19 @@ void checkWiFiStatus() {
   } else {
     wifiConnected = false;
     
-    // 尝试重新连接WiFi（如果之前连接成功但现在断开）
-    if (wifiConnected) {
-      // 重置WiFi连接
+    // 如果以前连接成功但现在断开，则尝试重连
+    static bool lastWifiState = false;
+    if (lastWifiState) {
       WiFi.disconnect();
       delay(1000);
       WiFi.begin(ssid, password);
     }
+    lastWifiState = wifiConnected;
   }
   
-  // 如果WiFi连接状态发生变化，更新MQTT连接
-  static bool lastWifiState = false;
-  if (wifiConnected != lastWifiState) {
-    lastWifiState = wifiConnected;
-    
-    if (wifiConnected) {
-      connectToAliyun();
-    }
+  // 如果WiFi重新连接上，连接MQTT
+  if (wifiConnected && !mqttClient.connected()) {
+    connectToAliyun();
   }
 }
 
@@ -1314,9 +1248,7 @@ void startCheckInMode() {
   checkInStartTime = millis(); // 记录查寝开始时间
   
   // 重置所有指纹打卡状态
-  for (int i = 0; i <= MAX_FINGER_ID; i++) {
-    fingerCheckedIn[i] = false;
-  }
+  memset(fingerCheckedIn, false, sizeof(fingerCheckedIn));
   
   // 显示提示信息
   u8g2.clearBuffer();
@@ -1331,8 +1263,6 @@ void startCheckInMode() {
   digitalWrite(BUZZER_PIN, HIGH);
   delay(200);
   digitalWrite(BUZZER_PIN, LOW);
-  
-  Serial.println("查寝模式已启动");
 }
 
 //----------------------------------------
@@ -1361,11 +1291,7 @@ void handleCheckInMode() {
     u8g2.setCursor(0, 35);
     u8g2.print("查寝结束");
     u8g2.setCursor(0, 55);
-    if (allCheckedIn) {
-      u8g2.print("全员已打卡");
-    } else {
-      u8g2.print("时间已到");
-    }
+    u8g2.print(allCheckedIn ? "全员已打卡" : "时间已到");
     u8g2.sendBuffer();
     
     // 发出蜂鸣器提示音
@@ -1379,13 +1305,12 @@ void handleCheckInMode() {
       }
     } else {
       // 时间到，发出两声提示
-      digitalWrite(BUZZER_PIN, HIGH);
-      delay(200);
-      digitalWrite(BUZZER_PIN, LOW);
-      delay(200);
-      digitalWrite(BUZZER_PIN, HIGH);
-      delay(200);
-      digitalWrite(BUZZER_PIN, LOW);
+      for (int i = 0; i < 2; i++) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(200);
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(200);
+      }
     }
     
     // 上报查寝结果
@@ -1400,51 +1325,37 @@ void handleCheckInMode() {
     digitalWrite(ZW_CTRL, HIGH); // 激活指纹模块
     
     // 获取指纹图像
-    if (PS_GetImage() == 0x00) {
-      // 生成特征并存入缓冲区1
-      if (PS_GetChar1() == 0x00) {
-        // 搜索指纹
-        FPM383C_SendData(17, PS_SearchMBBuffer);
-        FPM383C_ReceiveData(5000);
+    if (PS_GetImage() == 0x00 && PS_GetChar1() == 0x00) {
+      // 搜索指纹
+      FPM383C_SendData(17, PS_SearchMBBuffer);
+      FPM383C_ReceiveData(5000);
+      
+      // 如果是成功匹配的结果
+      if (PS_ReceiveBuffer[9] == 0x00) {
+        // 获取匹配的指纹ID
+        int matchedId = PS_ReceiveBuffer[10] * 256 + PS_ReceiveBuffer[11] + 1; // +1是因为界面ID从1开始
         
-        // 如果是成功匹配的结果
-        if (PS_ReceiveBuffer[9] == 0x00) {
-          // 获取匹配的指纹ID（注意这里的偏移可能需要根据实际指纹模块协议调整）
-          int matchedId = PS_ReceiveBuffer[10] * 256 + PS_ReceiveBuffer[11] + 1; // +1是因为界面ID从1开始
+        // 检查ID是否在有效范围内
+        if (matchedId >= 1 && matchedId <= MAX_FINGER_ID) {
+          // 将该指纹ID标记为已打卡
+          fingerCheckedIn[matchedId] = true;
           
-          // 检查ID是否在有效范围内
-          if (matchedId >= 1 && matchedId <= MAX_FINGER_ID) {
-            // 将该指纹ID标记为已打卡
-            fingerCheckedIn[matchedId] = true;
-            
-            // 显示打卡成功信息
-            u8g2.clearBuffer();
-            u8g2.setFont(u8g2_font_wqy16_t_gb2312);
-            u8g2.setCursor(0, 35);
-            u8g2.print("ID");
-            u8g2.print(matchedId);
-            u8g2.print("打卡成功");
-            u8g2.sendBuffer();
-            
-            // 蜂鸣器提示一声
-            digitalWrite(BUZZER_PIN, HIGH);
-            delay(100);
-            digitalWrite(BUZZER_PIN, LOW);
-            
-            // 延迟一秒
-            delay(1000);
-            
-            // 检查是否全员已打卡
-            bool allCheckedIn = true;
-            for (int i = 1; i <= MAX_FINGER_ID; i++) {
-              if (!fingerCheckedIn[i]) {
-                allCheckedIn = false;
-                break;
-              }
-            }
-            
-            // 如果全员已打卡，可以立即结束查寝（这里不直接结束，让下一个循环检测到并结束）
-          }
+          // 显示打卡成功信息
+          u8g2.clearBuffer();
+          u8g2.setFont(u8g2_font_wqy16_t_gb2312);
+          u8g2.setCursor(0, 35);
+          u8g2.print("ID");
+          u8g2.print(matchedId);
+          u8g2.print("打卡成功");
+          u8g2.sendBuffer();
+          
+          // 蜂鸣器提示一声
+          digitalWrite(BUZZER_PIN, HIGH);
+          delay(100);
+          digitalWrite(BUZZER_PIN, LOW);
+          
+          // 延迟一秒
+          delay(1000);
         }
       }
     }
@@ -1458,19 +1369,14 @@ void handleCheckInMode() {
 // 显示查寝页面
 //----------------------------------------
 void displayCheckInPage() {
-  // 获取当前时间
+  // 获取当前时间和剩余时间（秒）
   unsigned long currentTime = millis();
-  
-  // 计算剩余时间（秒）
-  int remainingSeconds = (checkInDuration - (currentTime - checkInStartTime)) / 1000;
-  if (remainingSeconds < 0) remainingSeconds = 0;
+  int remainingSeconds = max(0, (int)((checkInDuration - (currentTime - checkInStartTime)) / 1000));
   
   // 计算未打卡人数
   int absentCount = 0;
   for (int i = 1; i <= MAX_FINGER_ID; i++) {
-    if (!fingerCheckedIn[i]) {
-      absentCount++;
-    }
+    if (!fingerCheckedIn[i]) absentCount++;
   }
   
   // 清空OLED显示屏缓冲区
@@ -1493,30 +1399,22 @@ void displayCheckInPage() {
   u8g2.print(absentCount);
   u8g2.print("人");
   
-  // 仅显示未打卡的ID
+  // 显示未打卡的ID或全部已打卡信息
+  u8g2.setFont(u8g2_font_wqy12_t_gb2312);
+  u8g2.setCursor(0, 58);
+  
   if (absentCount > 0) {
-    u8g2.setFont(u8g2_font_wqy12_t_gb2312);
-    u8g2.setCursor(0, 58);
     u8g2.print("未打卡ID: ");
     
     int xPos = 60; // 起始x位置
-    for (int i = 1; i <= MAX_FINGER_ID; i++) {
+    for (int i = 1; i <= MAX_FINGER_ID && xPos <= 110; i++) {
       if (!fingerCheckedIn[i]) {
-        // 判断是否需要换行
-        if (xPos > 110) {
-          break; // 如果超出屏幕宽度，不再显示更多ID
-        }
-        
-        // 显示未打卡的ID
         u8g2.setCursor(xPos, 58);
         u8g2.print(i);
         xPos += 12; // 每个ID占12像素宽
       }
     }
   } else {
-    // 全部已打卡
-    u8g2.setFont(u8g2_font_wqy12_t_gb2312);
-    u8g2.setCursor(0, 58);
     u8g2.print("全部已打卡");
   }
   
@@ -1528,10 +1426,7 @@ void displayCheckInPage() {
 // 上报查寝结果
 //----------------------------------------
 void reportCheckInResult() {
-  if (!wifiConnected || !mqttClient.connected()) {
-    Serial.println("网络未连接，无法上报查寝结果");
-    return;
-  }
+  if (!wifiConnected || !mqttClient.connected()) return;
   
   // 创建JSON对象
   DynamicJsonDocument doc(512);
@@ -1541,35 +1436,22 @@ void reportCheckInResult() {
   doc["version"] = "1.0";
   doc["method"] = "thing.event.property.post";
   
-  // 创建params对象
-  JsonObject params = doc.createNestedObject("params");
-  
   // 构造未打卡人员ID字符串
-  String absentString = "";
-  bool isFirst = true;
   bool hasAbsent = false;
+  String absentString = "";
   
   // 统计并添加未打卡的用户ID
   for (int i = 1; i <= MAX_FINGER_ID; i++) {
     if (!fingerCheckedIn[i]) {
-      if (!isFirst) {
-        absentString += ","; // 添加分隔符
-      }
-      absentString += String(i); // 添加ID
-      isFirst = false;
+      if (!absentString.isEmpty()) absentString += ",";
+      absentString += String(i);
       hasAbsent = true;
     }
   }
   
   // 如果没有未打卡人员，显示"全员已打卡"
-  if (!hasAbsent) {
-    absentString = "全员已打卡";
-  }
-  
-  // 设置未打卡人员字符串
-  params["absentUsers"] = absentString;
-  
-  // 重置查寝启动属性
+  JsonObject params = doc.createNestedObject("params");
+  params["absentUsers"] = hasAbsent ? absentString : "全员已打卡";
   params["startCheckIn"] = 0;
   
   // 序列化JSON
@@ -1578,11 +1460,8 @@ void reportCheckInResult() {
   
   // 发布到阿里云属性上报主题
   if (mqttClient.publish(ALI_TOPIC_PROP_POST, jsonBuffer)) {
-    Serial.println("查寝结果上报成功");
     // 重置本地状态
     lastCheckInFlag = false;
-  } else {
-    Serial.println("查寝结果上报失败");
   }
 }
 
