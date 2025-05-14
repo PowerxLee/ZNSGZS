@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <U8g2lib.h>  // OLED显示屏库
-#include <DHT.h>      // DHT11温湿度传感器库
 #include <Wire.h>     // I2C通信库
 #include <BH1750.h>   // BH1750光照传感器库
 #include <OneButton.h> // 按键处理库
@@ -9,7 +8,7 @@
 #include <PubSubClient.h> // MQTT库
 #include <ArduinoJson.h>  // JSON库
 #include <Ticker.h>      // 定时器库
-#include "ClosedCube_SHT31D.h"
+#include "SoftI2C_SHT30.h"
 
 //----------------------------------------
 // 引脚定义
@@ -17,11 +16,7 @@
 // 传感器引脚
 #define FLAME_SENSOR_PIN 2  // 火焰传感器引脚
 #define MQ2_SENSOR_PIN 8    // MQ-2气体传感器引脚
-#define DHTPIN 1            // DHT11温湿度传感器引脚
-#define VOICE 3            // max4466语音传感器引脚
-#define DHTTYPE DHT11       // 使用DHT11型号
-#define ZW_IRQ 18           //指纹模块检测引脚
-#define ZW_CTRL 11           // 指纹模块启动引脚
+#define VOICE 1            // max4466语音传感器引脚
 
 // 输出设备引脚
 #define LIGHT_PIN 16        // LED灯引脚
@@ -33,6 +28,11 @@
 #define KEY1 47             // 按键引脚
 #define KEY2 38             // 按键引脚
 #define KEY3 39             // 按键3引脚
+
+// SHT30传感器引脚
+#define SHT30_SDA_PIN 3  // SHT30 SDA引脚
+#define SHT30_SCL_PIN 4  // SHT30 SCL引脚
+
 //----------------------------------------
 // 阿里云MQTT配置
 //----------------------------------------
@@ -62,9 +62,6 @@
 // 初始化OLED显示屏 SCL-21   SDA-40
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE, /* clock=*/21, /* data=*/40);
 
-// 初始化DHT11温湿度传感器
-DHT dht(DHTPIN, DHTTYPE);
-
 // 初始化BH1750光照传感器
 BH1750 lightMeter(0x23);
 
@@ -76,6 +73,9 @@ int postMsgId = 0; // 消息ID,每次上报属性时递增
 WiFiClient espClient; // 创建WiFiClient对象
 PubSubClient mqttClient(espClient); // 创建PubSubClient对象
 Ticker mqttTicker; // 创建定时器对象，用于定时上报数据
+
+// 初始化SHT30传感器（软件I2C方式）
+SoftI2C_SHT30 sht30(SHT30_SDA_PIN, SHT30_SCL_PIN);
 
 //----------------------------------------
 // 全局变量
@@ -255,14 +255,14 @@ void setup()
   u8g2.begin(); 
   u8g2.enableUTF8Print();  // 启用UTF8打印，支持中文显示
 
-  // 初始化DHT11温湿度传感器
-  dht.begin();
-
   // 初始化I2C总线，指定SDA和SCL引脚
   Wire1.begin(15, 41);  // SDA=15, SCL=41
 
   // 初始化BH1750光照传感器
   lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1);
+  
+  // 初始化SHT30传感器
+  sht30.begin();
 
   // 初始化指纹模块串口
   mySerial.begin(57600);
@@ -274,12 +274,11 @@ void setup()
   pinMode(KEY2, INPUT);              // 按键2
   pinMode(KEY3, INPUT);              // 按键3
   pinMode(VOICE, INPUT);             // max4466语音传感器
-  pinMode(ZW_IRQ, INPUT);            // 指纹模块检测引脚设置为输入
+  
   // 设置输出引脚
   pinMode(LIGHT_PIN, OUTPUT);        // LED灯
   pinMode(FAN_PIN, OUTPUT);          // 风扇
   pinMode(PUMP_PIN, OUTPUT);         // 水泵
-  pinMode(ZW_CTRL, OUTPUT);          // 指纹模块启动引脚设置为输出
   pinMode(BUZZER_PIN, OUTPUT);       // 蜂鸣器引脚设置为输出
   
   // 初始化输出设备状态
@@ -341,9 +340,6 @@ void loop()
   button2.tick();
   button3.tick();
   
-  // 指纹模块始终保持启动状态
-  digitalWrite(ZW_CTRL, HIGH);
-  
   // 检查WiFi状态（定期检查）
   if (currentTime - lastWiFiCheckTime >= wifiCheckInterval) {
     checkWiFiStatus();
@@ -381,19 +377,6 @@ void loop()
     if (currentTime - lastSensorReadTime >= sensorReadInterval) {
       // 读取所有传感器数据
       readSensors(temperature, humidity, lux, flameValue, mq2Value, dB);
-      
-      // 检查DHT11数据是否有效
-      if (isnan(humidity) || isnan(temperature))
-      {
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_ncenB08_tr);
-        u8g2.setCursor(0, 15);
-        u8g2.print("DHT11 Error");
-        u8g2.sendBuffer();
-        delay(1000); // 延迟1秒后重试
-        lastSensorReadTime = currentTime; // 更新上次读取时间
-        return;
-      }
       
       // 温度检测 - 温度大于阈值自动打开风扇
       if (temperature > temperatureThreshold) {
@@ -505,9 +488,17 @@ void readSensors(float &temperature, float &humidity, float &lux, int &flameValu
   // 读取max4466语音传感器并映射到0-100范围
   dB = map(analogRead(VOICE), 0, 4095, 0, 100);
 
-  // 读取DHT11的温湿度数据
-  humidity = dht.readHumidity();       // 读取湿度
-  temperature = dht.readTemperature(); // 读取温度（摄氏度）
+  // 从SHT30传感器获取温湿度数据
+  SoftI2C_SHT30::SHT30_Result result = sht30.readTempAndHumidity();
+  if (result.valid) {
+    temperature = result.temperature;
+    humidity = result.humidity;
+  } else {
+    // 读取失败时保持默认值或前一个有效值
+    // 如果没有前一个有效值，则使用默认值
+    if (temperature == 0) temperature = 25.0;
+    if (humidity == 0) humidity = 50.0;
+  }
 
   // 读取BH1750的光照强度
   lux = lightMeter.readLightLevel();
@@ -658,28 +649,22 @@ void addFinger()
     return;
   }
 
-  // 检测指纹模块是否唤醒（通过ZW_IRQ引脚）
-  if (digitalRead(ZW_IRQ) == HIGH) {
-    // 指纹模块已唤醒，开始添加指纹
-    digitalWrite(ZW_CTRL, HIGH); // 激活指纹模块
-    
-    // 执行添加指纹操作
-    uint8_t result = PS_AutoEnroll(fingerId - 1); // 注意ID从0开始，界面从1开始
-    
-    // 处理添加结果
-    enrollingFinger = false;
-    if (result == 0x00) {
-      // 添加成功
-      strcpy(feedbackMessage, "指纹添加成功");
-    } else {
-      // 添加失败
-      strcpy(feedbackMessage, "指纹添加失败");
-    }
-    
-    // 显示反馈信息
-    showFeedback = true;
-    feedbackStartTime = millis();
+  // 执行添加指纹操作
+  uint8_t result = PS_AutoEnroll(fingerId - 1); // 注意ID从0开始，界面从1开始
+  
+  // 处理添加结果
+  enrollingFinger = false;
+  if (result == 0x00) {
+    // 添加成功
+    strcpy(feedbackMessage, "指纹添加成功");
+  } else {
+    // 添加失败
+    strcpy(feedbackMessage, "指纹添加失败");
   }
+  
+  // 显示反馈信息
+  showFeedback = true;
+  feedbackStartTime = millis();
 }
 
 //----------------------------------------
@@ -1113,12 +1098,6 @@ void publishSensorData() {
   int flameValue = 0, mq2Value = 0, dB = 0;
   readSensors(temperature, humidity, lux, flameValue, mq2Value, dB);
   
-  // 检查DHT11数据是否有效
-  if (isnan(humidity) || isnan(temperature)) {
-    Serial.println("DHT11数据无效，跳过本次上报");
-    return;
-  }
-  
   // 构建阿里云格式JSON
   char params[350];
   sprintf(params, "{"
@@ -1320,9 +1299,10 @@ void handleCheckInMode() {
     return;
   }
   
-  // 查寝过程中，检测是否有指纹验证
-  if (digitalRead(ZW_IRQ) == HIGH) {
-    digitalWrite(ZW_CTRL, HIGH); // 激活指纹模块
+  // 查寝过程中，定期检查是否有指纹验证
+  static unsigned long lastCheckTime = 0;
+  if (currentTime - lastCheckTime >= 500) { // 每500毫秒检查一次
+    lastCheckTime = currentTime;
     
     // 获取指纹图像
     if (PS_GetImage() == 0x00 && PS_GetChar1() == 0x00) {
